@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000)",
+      "Bash(curl -s http://127.0.0.1:8000/api/health)",
+      "Bash(netstat -ano)",
+      "Bash(awk '{print $NF}')",
+      "Bash(taskkill //F //PID 8744)",
+      "Bash(./.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --log-level warning)",
+      "Bash(./.venv/Scripts/python.exe test_logging.py)",
+      "Bash(./.venv/Scripts/python.exe *)",
+      "Bash(taskkill *)",
+      "Bash(xargs -r -I{} taskkill //F //PID {})",
+      "Bash(powershell *)",
+      "Bash(curl -s -m 5 http://127.0.0.1:8000/api/health)",
+      "Bash(curl -s -m 3 http://127.0.0.1:8000/api/health)",
+      "Bash(chmod +x restart.sh)",
+      "Bash(./restart.sh)",
+      "Bash(curl -s http://127.0.0.1:8000/api/projects/1/chapters)",
+      "Bash(curl *)",
+      "Bash(python _inspect.py)",
+      "Bash(python _dump.py)",
+      "Bash(python _cleanup.py)",
+      "Bash(python -c \"import app.routers.outline as o; print\\('outline import OK'\\); from app.main import app; print\\('routes:', len\\(app.routes\\)\\)\")",
+      "Bash(ls -d venv .venv)",
+      "Bash(ls venv/Scripts/python.exe)",
+      "Bash(ls .venv/Scripts/python.exe)",
+      "Bash(npm run *)",
+      "Bash(bash restart.sh)",
+      "Bash(./restart.sh 8000)",
+      "Read(//tmp/**)"
+    ]
+  }
+}
