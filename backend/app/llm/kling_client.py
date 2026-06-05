@@ -67,6 +67,8 @@ async def image_to_video(
     duration: Optional[int] = None,
     mode: Optional[str] = None,
     cfg_scale: float = 0.5,
+    sound: Optional[str] = None,
+    element_list: Optional[list[str]] = None,
     save_path: Optional[Path] = None,
     on_progress=None,
 ) -> dict:
@@ -77,10 +79,12 @@ async def image_to_video(
         image_url:  公网 URL（如通义万相返回的 OSS URL）。
 
     Args:
-        prompt: 运动/运镜描述。
+        prompt: 运动/运镜描述。支持 <<element_id>> 语法标记角色/场景。
         duration: 时长秒（5 或 10），默认取配置。
         mode: std | pro，默认取配置。
         cfg_scale: 提示词遵循度 0~1。
+        sound: 音效开关（on | off），默认取配置。
+        element_list: 可灵 element_id 列表（角色/场景一致性 ID）。
         save_path: 若提供则把成片下载到本地。
         on_progress: 可选回调 on_progress(status:str, attempt:int)。
 
@@ -101,10 +105,16 @@ async def image_to_video(
         "mode": mode or settings.video_mode,
         "duration": str(duration or settings.video_duration),
         "cfg_scale": cfg_scale,
+        "sound": sound or settings.video_sound,
     }
 
+    # 添加 element_list（角色/场景一致性 ID）
+    if element_list and len(element_list) > 0:
+        payload["element_list"] = [{"element_id": eid} for eid in element_list]
+
     logger.info(f"[Kling] 提交图生视频任务：mode={payload['mode']}, "
-                f"duration={payload['duration']}, "
+                f"duration={payload['duration']}, sound={payload['sound']}, "
+                f"element_list={len(element_list or [])}, "
                 f"image={'base64' if image_path else 'url'}, prompt={prompt}")
 
     async with httpx.AsyncClient(timeout=60.0) as client:

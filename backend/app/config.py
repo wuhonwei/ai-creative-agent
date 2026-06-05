@@ -51,9 +51,10 @@ class Settings(BaseSettings):
     kling_access_key: str = ""
     kling_secret_key: str = ""
     kling_base_url: str = "https://api-beijing.klingai.com"  # 国内站
-    kling_model: str = "kling-v1"
-    video_duration: int = 5         # 单镜头时长（秒），可灵支持 5 / 10
-    video_mode: str = "std"         # std（标准）| pro（高表现）
+    kling_model: str = "kling-v2-6"     # 模型名称（v2-6 支持 element_id）
+    video_duration: int = 5             # 单镜头时长（秒），可灵支持 5 / 10
+    video_mode: str = "pro"             # std（标准）| pro（高表现）
+    video_sound: str = "on"             # 音效：on | off
 
     # ffmpeg / ffprobe 可执行文件完整路径。
     # 本机装在 D:\下载\ffmpeg\bin\，不在 PATH 且路径含中文，必须用完整路径调用。

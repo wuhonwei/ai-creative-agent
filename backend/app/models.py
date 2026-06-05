@@ -95,6 +95,7 @@ class Scene(SQLModel, table=True):
       [光影与镜头] light_source / light_tech / viewpoint / composition
     一个场景可被多个章节复用（多对多见 ChapterScene），靠 LLM 比对"是否同一地点"
     决定复用已有还是新建（场景有变化即新建）。
+    kling_element_id 是可灵平台生成的场景一致性 ID，用于跨镜头保持场景统一。
     """
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -116,6 +117,7 @@ class Scene(SQLModel, table=True):
     composition: str = ""      # 构图（对称/三分法/引导线）
     locked_prompt: str = ""    # 组装后的固定提示词（生图用）
     image_path: str = ""       # 生成的场景图，相对 videos/ 目录的文件名
+    kling_element_id: str = "" # 可灵 element_id（场景一致性 ID）
     status: str = "draft"      # draft | done | failed
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
@@ -159,6 +161,7 @@ class CharacterDesign(SQLModel, table=True):
 
     locked_prompt 是从下列关键词组装、全剧统一复用的固定提示词，
     保证同一角色在所有参考图/镜头中外观一致。
+    kling_element_id 是可灵平台生成的角色一致性 ID，用于跨镜头保持角色形象统一。
     """
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -175,6 +178,7 @@ class CharacterDesign(SQLModel, table=True):
     outfit: str = ""           # 服饰穿搭（衣服/裤子/鞋子/配饰）
     extra: str = ""            # 其它锁定关键词（配饰、体型等）
     locked_prompt: str = ""    # 组装后的固定提示词（全剧统一调用）
+    kling_element_id: str = "" # 可灵 element_id（角色一致性 ID）
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
 

@@ -48,6 +48,7 @@ const VIEW_LABELS = { face_closeup: '脸部特写', front: '正视图', side: '�
 const EMPTY_DESIGN = {
   gender: '', age: '', body_type: '', color_tone: '',
   art_style: '', facial_features: '', hair: '', outfit: '', extra: '',
+  kling_element_id: '',
 }
 
 function CharacterDesignPanel({ project, notify }) {
@@ -84,6 +85,7 @@ function CharacterDesignPanel({ project, notify }) {
           color_tone: d.color_tone || '', art_style: d.art_style || '',
           facial_features: d.facial_features || '', hair: d.hair || '',
           outfit: d.outfit || '', extra: d.extra || '',
+          kling_element_id: d.kling_element_id || '',
         }
         : { ...EMPTY_DESIGN })
       setRefs(rs)
@@ -266,6 +268,28 @@ function CharacterDesignPanel({ project, notify }) {
           <input value={form.outfit} onChange={set('outfit')} placeholder="如：黑色风衣 + 长裤 + 马丁靴" />
           <label>其它锁定词（可选）</label>
           <input value={form.extra} onChange={set('extra')} placeholder="如：银色耳钉、纤细手部" />
+
+          <div className="hint" style={{ fontWeight: 600, margin: '12px 0 4px' }}>可灵一致性设置</div>
+          <label>
+            可灵 Element ID
+            <span className="hint" style={{ fontSize: 12, marginLeft: 8 }}>
+              （用于跨镜头保持角色形象一致）
+            </span>
+          </label>
+          <input
+            value={form.kling_element_id}
+            onChange={set('kling_element_id')}
+            placeholder="例如：girl1, boy2, man1"
+            style={{ fontFamily: 'monospace' }}
+          />
+          <p className="hint" style={{ fontSize: 12, margin: '4px 0 0' }}>
+            在可灵平台生成角色后获得的 element_id。
+            <a href="https://klingai.com" target="_blank" rel="noopener noreferrer"
+               style={{ marginLeft: 6, color: 'var(--accent)' }}>
+              前往可灵平台 →
+            </a>
+          </p>
+
           <div className="row" style={{ marginTop: 12 }}>
             <button className="primary" onClick={saveDesign}>保存锁定设定</button>
           </div>
@@ -535,6 +559,28 @@ function SceneCard({ scene, notify, onGenImage, onChange }) {
           <input value={form.composition || ''} onChange={set('composition')} placeholder="对称/三分法/引导线" />
         </div>
       </div>
+
+      <div className="hint" style={{ fontWeight: 600, margin: '12px 0 4px' }}>可灵一致性设置</div>
+      <label>
+        可灵 Element ID
+        <span className="hint" style={{ fontSize: 12, marginLeft: 8 }}>
+          （用于跨镜头保持场景一致）
+        </span>
+      </label>
+      <input
+        value={form.kling_element_id || ''}
+        onChange={set('kling_element_id')}
+        placeholder="例如：place1, room2, street1"
+        style={{ fontFamily: 'monospace' }}
+      />
+      <p className="hint" style={{ fontSize: 12, margin: '4px 0 0' }}>
+        在可灵平台生成场景后获得的 element_id。
+        <a href="https://klingai.com" target="_blank" rel="noopener noreferrer"
+           style={{ marginLeft: 6, color: 'var(--accent)' }}>
+          前往可灵平台 →
+        </a>
+      </p>
+
       <p className="hint" style={{ marginTop: 8 }}>
         画质渲染（UE5/Octane/8k）+「画面无角色」已自动注入。
       </p>

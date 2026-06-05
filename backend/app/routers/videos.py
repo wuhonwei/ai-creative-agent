@@ -80,7 +80,8 @@ def _parse_all_ids(s: str) -> list[int]:
 
 async def _run_generation(video_id: int, shot_id: int, frame_prompt: str,
                           edit_prompt: str, ref_image_names: list[str],
-                          motion_prompt: str, duration: int):
+                          motion_prompt: str, duration: int,
+                          element_ids: list[str], kling_prompt: str):
     """后台任务：先出"符合本镜场景"的首帧 → 再图生视频 → 回写 Video。
 
     首帧生成两条路：
@@ -89,6 +90,8 @@ async def _run_generation(video_id: int, shot_id: int, frame_prompt: str,
         多人物镜头会把所有出场角色的参考图一起喂进去，各自锁形象。
       没有参考图 → 退回纯文生图（frame_prompt，场景优先+外貌词）。
     motion_prompt：运动/运镜描述，传给可灵控制动态。
+    element_ids：可灵 element_id 列表（角色/场景一致性 ID）。
+    kling_prompt：带 <<element_id>> 标记的提示词（用于可灵 API）。
     用独立 session（脱离请求生命周期）。
     """
     with Session(engine) as session:
@@ -124,13 +127,14 @@ async def _run_generation(video_id: int, shot_id: int, frame_prompt: str,
                 )
             v.poster_path = frame_name  # 存首帧图作封面
 
-            # 2) 图生视频：以该首帧出片
+            # 2) 图生视频：以该首帧出片，使用 element_id 确保角色/场景一致性
             filename = f"shot_{shot_id}_{uuid.uuid4().hex[:10]}.mp4"
             save_path = VIDEOS_DIR / filename
             result = await kling_client.image_to_video(
                 image_path=frame_path,
-                prompt=motion_prompt,
+                prompt=kling_prompt or motion_prompt,  # 优先使用带 element_id 标记的 prompt
                 duration=duration,
+                element_list=element_ids if element_ids else None,
                 save_path=save_path,
             )
             v.video_path = filename
@@ -180,11 +184,11 @@ def _character_appearance(session: Session, character_id: int) -> Optional[str]:
 
 
 def _collect_shot_characters(session: Session, shot: Shot) -> tuple[list[dict], str]:
-    """收集本镜所有出场角色的 {name, appearance, ref_image}，按 character_ids 顺序。
+    """收集本镜所有出场角色的 {name, appearance, ref_image, kling_element_id}，按 character_ids 顺序。
 
     只纳入"有锁定设定（外貌词）"的角色——没设定的没法保证形象一致，跳过它。
     返回 (chars, reason)：chars 为空时 reason 给出原因。
-    每项：{"id", "name", "appearance", "ref_image"(可能 None)}。
+    每项：{"id", "name", "appearance", "ref_image"(可能 None), "kling_element_id"}。
     ref_image 顺序与 appearance 顺序严格对应，供 edit_image 多图按序锁脸。
     """
     cids = _parse_all_ids(shot.character_ids)
@@ -200,11 +204,19 @@ def _collect_shot_characters(session: Session, shot: Shot) -> tuple[list[dict], 
         if appearance is None:
             missing.append(name)
             continue
+
+        # 获取 kling_element_id
+        d = session.exec(
+            select(CharacterDesign).where(CharacterDesign.character_id == cid)
+        ).first()
+        kling_eid = d.kling_element_id if d and d.kling_element_id else ""
+
         chars.append({
             "id": cid,
             "name": name,
             "appearance": appearance,
             "ref_image": _primary_ref_image_name(session, cid),
+            "kling_element_id": kling_eid,
         })
 
     if not chars:
@@ -225,10 +237,49 @@ def _queue_shot_video(session: Session, shot: Shot, board: Storyboard,
     if not shot.description.strip():
         return None, "镜头没有画面描述"
 
-    # 收集所有出场角色的设定词 + 锁定参考图（按出场顺序，跳过没设定的）
+    # 收集所有出场角色的设定词 + 锁定参考图 + element_id（按出场顺序，跳过没设定的）
     chars, reason = _collect_shot_characters(session, shot)
     if not chars:
         return None, reason
+
+    # 收集所有 element_id（角色 + 场景）
+    element_ids = []
+    kling_prompt_parts = []
+
+    # 构建带 <<element_id>> 标记的 prompt
+    # 例如：乔病病<<girl1>>冲进了<<place1>>
+    desc = shot.description
+
+    # 为每个角色添加 element_id 标记
+    for c in chars:
+        eid = c.get("kling_element_id", "")
+        if eid:
+            element_ids.append(eid)
+            # 在角色名后添加 <<element_id>> 标记
+            name = c["name"]
+            if name in desc:
+                desc = desc.replace(name, f"{name}<<{eid}>>", 1)
+
+    # 获取场景的 element_id（如果有）
+    if shot.scene:
+        # 尝试从 Scene 表查找场景的 element_id
+        from app.models import Scene, ChapterScene
+        # 先找本章关联的场景
+        board = session.get(Storyboard, shot.storyboard_id)
+        if board and board.chapter_id:
+            scene_links = session.exec(
+                select(ChapterScene).where(ChapterScene.chapter_id == board.chapter_id)
+            ).all()
+            for link in scene_links:
+                scene = session.get(Scene, link.scene_id)
+                if scene and scene.kling_element_id and shot.scene in scene.name:
+                    element_ids.append(scene.kling_element_id)
+                    # 在场景名后添加标记
+                    if scene.name in desc:
+                        desc = desc.replace(scene.name, f"{scene.name}<<{scene.kling_element_id}>>", 1)
+                    break
+
+    kling_prompt = desc  # 带 element_id 标记的 prompt
 
     # 首帧图提示词：场景优先 + 外貌锁定（纯文生图回退用，拼所有出场角色外貌）
     appearance_all = "；".join(
@@ -271,11 +322,12 @@ def _queue_shot_video(session: Session, shot: Shot, board: Storyboard,
     session.refresh(v)
 
     background.add_task(_run_generation, v.id, shot.id, frame_prompt, edit_prompt,
-                        ref_image_names, motion, duration)
+                        ref_image_names, motion, duration, element_ids, kling_prompt)
     names = "、".join(c["name"] for c in chars)
+    element_info = f"，element_ids={len(element_ids)}" if element_ids else ""
     logger.info(f"[Videos] 镜头 {shot.id} 开始后台出片：video_id={v.id}"
                 f"，出场角色=[{names}]，参考图 {len(ref_image_names)} 张"
-                f"{'（纯文生图）' if not ref_image_names else ''}")
+                f"{'（纯文生图）' if not ref_image_names else ''}{element_info}")
     return v, ""
 
 
