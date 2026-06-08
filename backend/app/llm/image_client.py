@@ -1,5 +1,4 @@
 """通义万相图片生成客户端。"""
-import base64
 import logging
 import httpx
 from pathlib import Path
@@ -207,106 +206,6 @@ async def generate_image(
             raise RuntimeError(f"API响应格式错误: {result}")
 
 
-async def edit_image(
-    prompt: str,
-    ref_image_paths,
-    width: int = 1024,
-    height: int = 1024,
-    save_path: Optional[Path] = None,
-) -> dict:
-    """基于参考图编辑/重绘：保持参考图主体（角色）一致，按 prompt 改场景。
-
-    用通义图像编辑模型（qwen-image-edit），走 multimodal-generation 接口，
-    content = [{"image": 参考图base64}, ..., {"text": prompt}]，同步返回图片 URL。
-    支持多张参考图（多人物镜头）：每个出场角色一张锁定参考图，全部喂进去，
-    模型保持各自角色形象一致地画进同一画面（实测可同时锁多个角色）。
-
-    用于镜头首帧：把角色锁定参考图喂进去，prompt 描述本镜场景/姿势，
-    从而画面跟镜头走、角色长相和参考图严格一致，杜绝跨镜头变脸。
-
-    Args:
-        prompt: 编辑指令（保持各角色一致 + 本镜场景描述）
-        ref_image_paths: 单个 Path 或 Path 列表（多人物镜头）
-        width/height: 输出尺寸
-        save_path: 本地保存路径
-
-    Returns:
-        {"url", "local_path", "width", "height"}
-    """
-    # 兼容单个 Path 与列表
-    if isinstance(ref_image_paths, (str, Path)):
-        paths = [Path(ref_image_paths)]
-    else:
-        paths = [Path(p) for p in ref_image_paths]
-    paths = [p for p in paths if p.exists()]
-    if not paths:
-        raise RuntimeError("没有可用的参考图")
-
-    content = []
-    for p in paths:
-        b64 = base64.b64encode(p.read_bytes()).decode()
-        content.append({"image": f"data:image/png;base64,{b64}"})
-    content.append({"text": prompt})
-
-    headers = {
-        "Authorization": f"Bearer {settings.tongyi_api_key}",
-        "Content-Type": "application/json",
-    }
-    api_url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
-    payload = {
-        "model": settings.image_edit_model,
-        "input": {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": content,
-                }
-            ]
-        },
-        "parameters": {
-            "watermark": False,
-            "n": 1,
-            "size": f"{width}*{height}",
-        },
-    }
-
-    refs_label = ", ".join(p.name for p in paths)
-    logger.info(f"[TongyiEdit] 参考图重绘，model={settings.image_edit_model}, "
-                f"refs=[{refs_label}], prompt: {prompt[:80]}")
-
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        response = await client.post(api_url, headers=headers, json=payload)
-        if response.status_code != 200:
-            logger.error(f"[TongyiEdit] API错误: {response.status_code} - {response.text}")
-        response.raise_for_status()
-        result = response.json()
-
-        try:
-            content = result["output"]["choices"][0]["message"]["content"]
-            image_url = content[0]["image"]
-        except (KeyError, IndexError, TypeError):
-            logger.error(f"[TongyiEdit] 响应格式错误: {result}")
-            raise RuntimeError(f"图像编辑响应格式错误: {result}")
-
-        logger.info(f"[TongyiEdit] 重绘成功: {image_url}")
-
-        local_path = None
-        if save_path:
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            img_response = await client.get(image_url)
-            img_response.raise_for_status()
-            save_path.write_bytes(img_response.content)
-            local_path = str(save_path)
-            logger.info(f"[TongyiEdit] 图片已保存到: {local_path}")
-
-        return {
-            "url": image_url,
-            "local_path": local_path,
-            "width": width,
-            "height": height,
-        }
-
-
 def optimize_prompt_for_character(character_name: str, character_desc: str) -> str:
     """
     将角色描述转换为适合生成动漫风格图片的提示词。
@@ -438,6 +337,13 @@ def ref_view_size(view: str, base: int = 1024) -> tuple[int, int]:
     if view == "face_closeup":
         return base, base                  # 1:1 正方形特写
     return int(base * 0.75), base          # 3:4 竖图全身
+
+
+def ref_view_aspect_ratio(view: str) -> str:
+    """可灵文生图画面比例：特写 1:1，全身类 3:4。"""
+    if view == "face_closeup":
+        return "1:1"
+    return "3:4"
 
 
 # 所有参考图共用的负向词：去掉投影/落地阴影/倒影、背景杂物等。
@@ -618,82 +524,6 @@ def build_appearance_prompt(art_style: str = "", facial_features: str = "",
     if extra.strip():
         segs.append(extra.strip())
     return "，".join(segs)
-
-
-def build_shot_frame_prompt(appearance: str, scene_desc: str,
-                            camera: str = "", shot_size: str = "",
-                            scene: str = "", lighting: str = "") -> str:
-    """合成镜头首帧图的文生图提示词：场景优先 + 角色外貌锁定。
-
-    场景描述放在前面并强调"按本镜画面"，外貌词作为角色一致性约束跟在后面，
-    避免参考图里的姿势/道具（如轮椅）污染本镜画面。
-    shot_size/scene/lighting（景别/场景/光影）直接影响画面，作为构图约束拼入。
-    """
-    parts = [f"画面：{scene_desc.strip()}"]
-    if scene.strip():
-        parts.append(f"场景：{scene.strip()}")
-    if shot_size.strip():
-        parts.append(f"景别：{shot_size.strip()}")
-    if camera.strip():
-        parts.append(f"运镜：{camera.strip()}")
-    if lighting.strip():
-        parts.append(f"光影：{lighting.strip()}")
-    if appearance.strip():
-        parts.append(f"角色外貌（保持一致）：{appearance.strip()}")
-    quality = "masterpiece, best quality, highly detailed, 2D anime style, 统一色调"
-    return "，".join(parts) + f", {quality}"
-
-
-def build_shot_edit_prompt(scene_desc: str, camera: str = "",
-                           characters=None, shot_size: str = "",
-                           scene: str = "", lighting: str = "") -> str:
-    """合成"参考图重绘"指令：锁定参考图角色形象，按本镜场景改姿势/环境。
-
-    用于 edit_image（qwen-image-edit）：参考图已锁住角色长相，所以指令重点是
-    "保持参考图角色的五官/发型发色/服饰不变"，同时"姿势、动作、环境、背景全部
-    按本镜画面重画，不要保留参考图原本的姿势和背景"，避免立绘姿势/道具污染镜头。
-    shot_size/scene/lighting（景别/场景/光影）作为画面构图约束拼入。
-
-    characters: 出场角色列表，每项 {"name": 角色名, "appearance": 外貌锁定词}，
-    顺序需与传给 edit_image 的参考图顺序一致。单人和多人都走这里：
-      多人时明确"画面共 N 个角色，按参考图顺序分别是 …"，并要求各自形象一致，
-      让模型把每个角色对应到正确的参考图，不串脸。
-    """
-    chars = [c for c in (characters or []) if (c.get("appearance") or "").strip()]
-    n = len(chars)
-
-    if n <= 1:
-        keep = ("保持参考图中角色的五官、发型发色、服饰、体型完全一致，"
-                "这是同一个角色")
-    else:
-        # 多人：逐个点名 + 外貌，强调按参考图顺序一一对应、各自保持一致
-        roster = []
-        for i, c in enumerate(chars):
-            name = (c.get("name") or f"角色{i + 1}").strip()
-            appe = c.get("appearance", "").strip()
-            roster.append(f"第{i + 1}个角色（{name}，对应第{i + 1}张参考图）：{appe}")
-        keep = (f"画面中共有 {n} 个角色，按参考图顺序分别是——"
-                + "；".join(roster)
-                + "。严格保持每个角色各自参考图中的五官、发型发色、服饰、体型一致，"
-                "不要把不同角色的特征混在一起")
-
-    change = (f"按以下画面重新绘制各角色的姿势、动作、表情、相对位置、环境和背景，"
-              f"不要保留参考图原来的姿势和背景：{scene_desc.strip()}")
-    parts = [keep, change]
-    if scene.strip():
-        parts.append(f"场景：{scene.strip()}")
-    if shot_size.strip():
-        parts.append(f"景别：{shot_size.strip()}")
-    if camera.strip():
-        parts.append(f"运镜：{camera.strip()}")
-    if lighting.strip():
-        parts.append(f"光影：{lighting.strip()}")
-    if n == 1:
-        appe = chars[0].get("appearance", "").strip()
-        if appe:
-            parts.append(f"角色外貌锁定：{appe}")
-    quality = "masterpiece, best quality, highly detailed, 2D anime style, 统一色调"
-    return "，".join(parts) + f", {quality}"
 
 
 # [技术与约束] —— 场景图固定注入：画质/渲染 + "不要有角色出现在场景里"。

@@ -123,6 +123,19 @@ class Scene(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=_now)
 
 
+class SceneRefImage(SQLModel, table=True):
+    """场景参考图。可灵文生图多次生成，多张图一并用于合成场景主体 ID。"""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(foreign_key="project.id", index=True)
+    scene_id: int = Field(foreign_key="scene.id", index=True)
+    prompt: str = ""
+    image_path: str = ""
+    status: str = "processing"  # processing | done | failed
+    error: str = ""
+    created_at: datetime = Field(default_factory=_now)
+
+
 class ChapterScene(SQLModel, table=True):
     """章节 ↔ 场景 多对多关联。一个章节有一组场景，一个场景可跨多个章节复用。"""
 
@@ -178,7 +191,8 @@ class CharacterDesign(SQLModel, table=True):
     outfit: str = ""           # 服饰穿搭（衣服/裤子/鞋子/配饰）
     extra: str = ""            # 其它锁定关键词（配饰、体型等）
     locked_prompt: str = ""    # 组装后的固定提示词（全剧统一调用）
-    kling_element_id: str = "" # 可灵 element_id（角色一致性 ID）
+    kling_voice_id: str = ""   # 可灵音色 ID（用于合成主体）
+    kling_element_id: str = "" # 可灵 element_id（主体 ID，由参考图+音色合成）
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
 
@@ -218,7 +232,7 @@ class Storyboard(SQLModel, table=True):
 class Shot(SQLModel, table=True):
     """单个镜头。LLM 从章节正文拆出，可人工编辑。
 
-    分镜模板 8 字段：景别(shot_size)、运景(camera)、人物(character_ids)、
+    分镜模板 8 字段：景别(shot_size)、运镜(camera)、人物(character_ids)、
     画面描述(description)、台词(dialogue)、音效(sound)、光影(lighting)、场景(scene)。
     其中 景别/场景/光影 会参与首帧图提示词（影响画面）；音效留作后续音频阶段。
     """
@@ -227,7 +241,7 @@ class Shot(SQLModel, table=True):
     storyboard_id: int = Field(foreign_key="storyboard.id", index=True)
     order_index: int = 0       # 镜头顺序
     shot_size: str = ""        # 景别：远景/全景/中景/近景/特写等
-    camera: str = ""           # 运景/运镜，如"推近/摇/固定/跟随"
+    camera: str = ""           # 运镜，如"推近/摇/固定/跟随"
     description: str = ""      # 画面描述（用于图生视频提示词）
     dialogue: str = ""         # 台词 / 旁白（后续配音用）
     sound: str = ""            # 音效（环境音/拟音，后续音频阶段用）
@@ -236,6 +250,22 @@ class Shot(SQLModel, table=True):
     duration: float = 5.0      # 时长（秒）
     character_ids: str = ""    # 出场角色 id，逗号分隔（如"1,3"）
     created_at: datetime = Field(default_factory=_now)
+
+
+class CustomVoice(SQLModel, table=True):
+    """可灵定制音色。通过声音 URL 调用可灵 API 生成音色 ID，供后续创建主体 ID 使用。"""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(foreign_key="project.id", index=True)
+    voice_name: str            # 声音名称
+    voice_url: str             # 声音样本 URL
+    voice_id: str = ""         # 可灵返回的音色 ID
+    task_id: str = ""          # 可灵任务 ID（轮询用）
+    trial_url: str = ""        # 试听 URL（可灵返回，可选）
+    status: str = "pending"    # pending | processing | done | failed
+    error: str = ""
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
 
 
 class Video(SQLModel, table=True):
@@ -247,7 +277,8 @@ class Video(SQLModel, table=True):
     ref_id: Optional[int] = Field(default=None, index=True)  # shot_id 或 chapter_id
     prompt: str = ""           # 生成时使用的提示词
     video_path: str = ""       # 相对 videos/ 目录的文件名
-    poster_path: str = ""      # 封面图（可选）
+    poster_path: str = ""      # 首帧图（从成片提取，可选）
+    last_frame_path: str = ""  # 尾帧图（从成片提取，可选）
     duration: float = 0.0
     width: int = 0
     height: int = 0

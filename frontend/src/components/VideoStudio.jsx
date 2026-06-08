@@ -1,9 +1,17 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../api'
 
-// 景别 / 运景 预设项（下拉可选，input 仍可自由输入自定义值）
+// 景别 / 运镜 预设项（下拉可选，input 仍可自由输入自定义值）
 const SHOT_SIZE_OPTIONS = ['大远景', '远景', '全景', '中景', '中近景', '近景', '特写', '大特写']
 const CAMERA_OPTIONS = ['固定', '推近', '拉远', '横摇', '竖摇', '跟随', '环绕', '俯拍', '仰拍', '手持晃动']
+const SHOT_DURATION_MIN = 5
+const SHOT_DURATION_MAX = 15
+
+function normalizeShotDuration(duration) {
+  const n = Number(duration)
+  if (Number.isNaN(n)) return SHOT_DURATION_MIN
+  return Math.min(SHOT_DURATION_MAX, Math.max(SHOT_DURATION_MIN, Math.round(n)))
+}
 
 // 视频工作台（地基阶段）：
 //  - 角色设定锁定：锁定画风/五官/发色/服饰 → 生成正/侧/斜/全身参考图 → 选首帧基准
@@ -48,7 +56,7 @@ const VIEW_LABELS = { face_closeup: '脸部特写', front: '正视图', side: '�
 const EMPTY_DESIGN = {
   gender: '', age: '', body_type: '', color_tone: '',
   art_style: '', facial_features: '', hair: '', outfit: '', extra: '',
-  kling_element_id: '',
+  kling_voice_id: '',
 }
 
 function CharacterDesignPanel({ project, notify }) {
@@ -58,6 +66,8 @@ function CharacterDesignPanel({ project, notify }) {
   const [form, setForm] = useState({ ...EMPTY_DESIGN })
   const [refs, setRefs] = useState([])
   const [generating, setGenerating] = useState(false)
+  const [creatingElement, setCreatingElement] = useState(false)
+  const [elementId, setElementId] = useState('')
   const [preview, setPreview] = useState(null)
 
   useEffect(() => {
@@ -79,13 +89,14 @@ function CharacterDesignPanel({ project, notify }) {
         api.listRefImages(project.id, cid),
       ])
       setDesign(d)
+      setElementId(d?.kling_element_id || '')
       setForm(d
         ? {
           gender: d.gender || '', age: d.age || '', body_type: d.body_type || '',
           color_tone: d.color_tone || '', art_style: d.art_style || '',
           facial_features: d.facial_features || '', hair: d.hair || '',
           outfit: d.outfit || '', extra: d.extra || '',
-          kling_element_id: d.kling_element_id || '',
+          kling_voice_id: d.kling_voice_id || '',
         }
         : { ...EMPTY_DESIGN })
       setRefs(rs)
@@ -96,8 +107,35 @@ function CharacterDesignPanel({ project, notify }) {
     try {
       const d = await api.saveDesign(project.id, activeId, form)
       setDesign(d)
+      setElementId(d.kling_element_id || '')
       notify('锁定设定已保存')
     } catch (e) { notify(e.message, true) }
+  }
+
+  const REQUIRED_REF_VIEWS = ['face_closeup', 'front', 'side', 'back', 'full_body']
+
+  async function createElement() {
+    if (!form.kling_voice_id.trim()) {
+      notify('请填写音色 ID', true)
+      return
+    }
+    const missing = REQUIRED_REF_VIEWS.filter((v) => !refs.some((r) => r.view === v))
+    if (missing.length) {
+      notify(
+        `合成主体需要完整五视角参考图，缺少：${missing.map((v) => VIEW_LABELS[v] || v).join('、')}。请先一键生成全套。`,
+        true,
+      )
+      return
+    }
+    setCreatingElement(true)
+    try {
+      const d = await api.createCharacterElement(project.id, activeId, {
+        voice_id: form.kling_voice_id.trim(),
+      })
+      setDesign(d)
+      setElementId(d.kling_element_id || '')
+      notify(`主体合成成功，ID：${d.kling_element_id}`)
+    } catch (e) { notify(e.message, true) } finally { setCreatingElement(false) }
   }
 
   const [autofilling, setAutofilling] = useState(false)
@@ -269,29 +307,42 @@ function CharacterDesignPanel({ project, notify }) {
           <label>其它锁定词（可选）</label>
           <input value={form.extra} onChange={set('extra')} placeholder="如：银色耳钉、纤细手部" />
 
-          <div className="hint" style={{ fontWeight: 600, margin: '12px 0 4px' }}>可灵一致性设置</div>
+          <div className="hint" style={{ fontWeight: 600, margin: '12px 0 4px' }}>可灵主体合成</div>
           <label>
-            可灵 Element ID
+            音色 ID
             <span className="hint" style={{ fontSize: 12, marginLeft: 8 }}>
-              （用于跨镜头保持角色形象一致）
+              （在「音色」页生成或从官方音色库获取）
             </span>
           </label>
           <input
-            value={form.kling_element_id}
-            onChange={set('kling_element_id')}
-            placeholder="例如：girl1, boy2, man1"
+            value={form.kling_voice_id}
+            onChange={set('kling_voice_id')}
+            placeholder="例如：829824295735410756"
             style={{ fontFamily: 'monospace' }}
           />
+          <label style={{ marginTop: 10 }}>主体 ID（Element ID）</label>
+          <input
+            value={elementId}
+            readOnly
+            placeholder="合成成功后显示"
+            style={{ fontFamily: 'monospace', opacity: elementId ? 1 : 0.6 }}
+          />
           <p className="hint" style={{ fontSize: 12, margin: '4px 0 0' }}>
-            在可灵平台生成角色后获得的 element_id。
-            <a href="https://klingai.com" target="_blank" rel="noopener noreferrer"
-               style={{ marginLeft: 6, color: 'var(--accent)' }}>
-              前往可灵平台 →
-            </a>
+            需本地齐备五视角参考图；提交可灵时按优先级最多传 3 张：正视图 + 侧视图 + 背视图（侧/背缺失时用脸部特写、全身替补）。
           </p>
 
-          <div className="row" style={{ marginTop: 12 }}>
+          <div className="row" style={{ marginTop: 12, gap: 8 }}>
             <button className="primary" onClick={saveDesign}>保存锁定设定</button>
+            <button
+              className="primary"
+              disabled={
+                creatingElement
+                || REQUIRED_REF_VIEWS.some((v) => !refs.some((r) => r.view === v))
+              }
+              onClick={createElement}
+            >
+              {creatingElement ? '合成中…' : '合成主体 ID'}
+            </button>
           </div>
           {design?.locked_prompt && (
             <p className="hint" style={{ marginTop: 10 }}>
@@ -309,7 +360,7 @@ function CharacterDesignPanel({ project, notify }) {
               {generating ? '生成中…' : '一键生成全套'}
             </button>
           </div>
-          {!design && <p className="hint">先保存锁定设定再生成参考图。</p>}
+          {!design && <p className="hint">先保存锁定设定，再使用可灵文生图生成参考图。</p>}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 12, marginTop: 12 }}>
             {refs.map((r) => (
               <div key={r.id} style={{ border: r.is_primary ? '2px solid var(--accent)' : '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
@@ -346,8 +397,6 @@ function CharacterDesignPanel({ project, notify }) {
 }
 
 // ============ 场景规划 ============
-const SCENE_STYLE_OPTIONS = ['废土科幻', '现代极简', '中世纪哥特', '赛博朋克', '暗黑奇幻', '日系清新', '水墨写意']
-
 function ScenePanel({ project, notify }) {
   const [chapters, setChapters] = useState([])
   const [activeChapterId, setActiveChapterId] = useState(null)
@@ -371,8 +420,11 @@ function ScenePanel({ project, notify }) {
     try {
       const ss = await api.getChapterScenes(chapterId)
       setScenes(ss)
-      // 对仍在处理的场景启动轮询
-      for (const s of ss) if (s.status === 'processing') pollScene(s.id)
+      for (const s of ss) {
+        if (s.status === 'processing' || (s.images || []).some((i) => i.status === 'processing')) {
+          pollScene(s.id)
+        }
+      }
     } catch (e) { notify(e.message, true) }
   }
 
@@ -383,7 +435,8 @@ function ScenePanel({ project, notify }) {
         const s = all.find((x) => x.id === sceneId)
         if (!s) { clearInterval(timer); return }
         setScenes((prev) => prev.map((p) => p.id === sceneId ? s : p))
-        if (s.status === 'done' || s.status === 'failed') clearInterval(timer)
+        const pending = (s.images || []).some((i) => i.status === 'processing')
+        if (!pending && s.status !== 'processing') clearInterval(timer)
       } catch { clearInterval(timer) }
     }, 6000)
   }
@@ -399,9 +452,11 @@ function ScenePanel({ project, notify }) {
 
   async function genImage(sceneId) {
     try {
-      const s = await api.generateSceneImage(sceneId)
-      setScenes((prev) => prev.map((p) => p.id === sceneId ? s : p))
-      notify('已提交场景图生成')
+      await api.generateSceneImage(sceneId)
+      const all = await api.getChapterScenes(activeChapterId)
+      const s = all.find((x) => x.id === sceneId)
+      if (s) setScenes((prev) => prev.map((p) => p.id === sceneId ? s : p))
+      notify('已提交可灵文生图，完成后自动显示')
       pollScene(sceneId)
     } catch (e) { notify(e.message, true) }
   }
@@ -434,10 +489,10 @@ function ScenePanel({ project, notify }) {
         <div style={{ borderTop: '1px solid var(--border)', marginTop: 10, paddingTop: 10 }}>
           <button className="small" disabled={batchRunning} style={{ width: '100%' }}
             onClick={genAllImages}>
-            {batchRunning ? '提交中…' : '🖼 一键生成所有场景图'}
+            {batchRunning ? '提交中…' : '🖼 一键为无图场景各生成一张'}
           </button>
           <p className="hint" style={{ marginTop: 6 }}>
-            场景跨章复用：同一地点只出一张图，多章共享
+            可灵文生图；同一场景可多次生成，多图合成主体 ID
           </p>
         </div>
       </div>
@@ -467,12 +522,45 @@ function ScenePanel({ project, notify }) {
   )
 }
 
-// 单个场景卡片：8 区块字段可编辑 + 场景图
+// 单个场景卡片：8 区块字段可编辑 + 多图场景参考 + 主体合成
 function SceneCard({ scene, notify, onGenImage, onChange }) {
   const [form, setForm] = useState(scene)
-  useEffect(() => { setForm(scene) }, [scene.id, scene.status, scene.image_url])
+  const [creatingElement, setCreatingElement] = useState(false)
+  const images = form.images || []
+  const doneImages = images.filter((i) => i.status === 'done' && i.image_url)
+  const processingCount = images.filter((i) => i.status === 'processing').length
+
+  useEffect(() => {
+    setForm(scene)
+  }, [scene.id, scene.status, scene.image_url, scene.kling_element_id, scene.images])
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }))
+
+  async function deleteImage(imageId) {
+    if (!confirm('删除这张场景图？')) return
+    try {
+      await api.deleteSceneImage(imageId)
+      const imgs = await api.listSceneImages(scene.id)
+      const ns = { ...form, images: imgs, status: imgs.some((i) => i.status === 'processing') ? 'processing' : (imgs.some((i) => i.status === 'done') ? 'done' : 'draft') }
+      setForm(ns)
+      onChange(ns)
+      notify('场景图已删除')
+    } catch (e) { notify(e.message, true) }
+  }
+
+  async function createElement() {
+    if (doneImages.length === 0) {
+      notify('请先生成至少一张场景图', true)
+      return
+    }
+    setCreatingElement(true)
+    try {
+      const ns = await api.createSceneElement(scene.id)
+      setForm(ns)
+      onChange(ns)
+      notify(`场景主体合成成功，ID：${ns.kling_element_id}（使用 ${doneImages.length} 张参考图）`)
+    } catch (e) { notify(e.message, true) } finally { setCreatingElement(false) }
+  }
 
   async function save() {
     try {
@@ -489,30 +577,48 @@ function SceneCard({ scene, notify, onGenImage, onChange }) {
         {form.chapter_ids?.length > 1 && (
           <span className="tag confirmed">跨 {form.chapter_ids.length} 章复用</span>
         )}
-        <span className="hint">{form.status === 'done' ? '已出图'
-          : form.status === 'processing' ? '生成中…'
-          : form.status === 'failed' ? '失败' : '待出图'}</span>
+        <span className="hint">
+          {processingCount > 0 ? `生成中 ${processingCount} 张…`
+            : doneImages.length > 0 ? `已生成 ${doneImages.length} 张`
+            : '待出图'}
+        </span>
         <div className="spacer" />
         <button className="small" onClick={save}>保存</button>
-        <button className="small primary" disabled={form.status === 'processing'}
-          onClick={onGenImage}>
-          {form.image_url ? '重新出图' : '🖼 生成场景图'}
+        <button className="small primary" onClick={onGenImage}>
+          🖼 生成场景图（可灵文生图）
         </button>
       </div>
 
-      {form.image_url && form.status === 'done' && (
-        <img src={api.sceneImageUrl(scene.id)} alt={form.name}
-          style={{ width: '100%', maxWidth: 480, borderRadius: 8, marginBottom: 8 }} />
+      {images.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+          {images.map((img) => (
+            <div key={img.id} style={{ width: 140, position: 'relative' }}>
+              {img.status === 'done' && img.image_url ? (
+                <img src={api.sceneRefImageUrl(img.id)} alt=""
+                  style={{ width: '100%', height: 100, objectFit: 'cover', borderRadius: 8 }} />
+              ) : (
+                <div style={{ width: '100%', height: 100, borderRadius: 8, background: 'var(--border)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12 }}>
+                  {img.status === 'processing' ? '生成中…' : img.status === 'failed' ? '失败' : '…'}
+                </div>
+              )}
+              {img.status === 'failed' && img.error && (
+                <div className="hint" style={{ fontSize: 11, marginTop: 2 }}>{img.error}</div>
+              )}
+              {img.status !== 'processing' && (
+                <button className="small danger" style={{ marginTop: 4, width: '100%' }}
+                  onClick={() => deleteImage(img.id)}>删除</button>
+              )}
+            </div>
+          ))}
+        </div>
       )}
 
       <div className="hint" style={{ fontWeight: 600, margin: '4px 0' }}>核心设定</div>
       <div className="row">
         <div style={{ flex: 1 }}>
           <label>风格</label>
-          <input value={form.style || ''} list={`scene-style-${scene.id}`} onChange={set('style')} placeholder="废土科幻/中世纪哥特" />
-          <datalist id={`scene-style-${scene.id}`}>
-            {SCENE_STYLE_OPTIONS.map((o) => <option key={o} value={o} />)}
-          </datalist>
+          <input value={form.style || ''} onChange={set('style')} placeholder="废土科幻/中世纪哥特" />
         </div>
         <div style={{ flex: 1 }}>
           <label>时间与天气</label>
@@ -560,26 +666,24 @@ function SceneCard({ scene, notify, onGenImage, onChange }) {
         </div>
       </div>
 
-      <div className="hint" style={{ fontWeight: 600, margin: '12px 0 4px' }}>可灵一致性设置</div>
-      <label>
-        可灵 Element ID
-        <span className="hint" style={{ fontSize: 12, marginLeft: 8 }}>
-          （用于跨镜头保持场景一致）
-        </span>
-      </label>
+      <div className="hint" style={{ fontWeight: 600, margin: '12px 0 4px' }}>可灵场景主体</div>
+      <label>主体 ID（Element ID）</label>
       <input
         value={form.kling_element_id || ''}
-        onChange={set('kling_element_id')}
-        placeholder="例如：place1, room2, street1"
-        style={{ fontFamily: 'monospace' }}
+        readOnly
+        placeholder="合成成功后显示"
+        style={{ fontFamily: 'monospace', opacity: form.kling_element_id ? 1 : 0.6 }}
       />
-      <p className="hint" style={{ fontSize: 12, margin: '4px 0 0' }}>
-        在可灵平台生成场景后获得的 element_id。
-        <a href="https://klingai.com" target="_blank" rel="noopener noreferrer"
-           style={{ marginLeft: 6, color: 'var(--accent)' }}>
-          前往可灵平台 →
-        </a>
+      <p className="hint" style={{ fontSize: 12, margin: '4px 0 8px' }}>
+        使用上方全部场景图作为参考，调用可灵 API 合成主体（标签：场景 o_106）。
       </p>
+      <button
+        className="small primary"
+        disabled={creatingElement || doneImages.length === 0}
+        onClick={createElement}
+      >
+        {creatingElement ? '合成中…' : form.kling_element_id ? '重新合成主体 ID' : '合成场景主体 ID'}
+      </button>
 
       <p className="hint" style={{ marginTop: 8 }}>
         画质渲染（UE5/Octane/8k）+「画面无角色」已自动注入。
@@ -595,9 +699,10 @@ function StoryboardPanel({ project, notify }) {
   const [board, setBoard] = useState(null)
   const [loading, setLoading] = useState(false)
   const [videos, setVideos] = useState({}) // shotId -> video record
+  const [previewSrc, setPreviewSrc] = useState(null) // 放大预览的图片 URL
   const [chapterVideo, setChapterVideo] = useState(null) // 章节成片
   const [characters, setCharacters] = useState([]) // 项目角色，供"人物"多选
-  const [plannedScenes, setPlannedScenes] = useState([]) // 本章已规划场景，约束镜头 scene
+  const [projectScenes, setProjectScenes] = useState([]) // 项目已登记场景（供 scene 输入参考）
 
   useEffect(() => {
     api.listChapters(project.id).then((cs) => {
@@ -605,6 +710,7 @@ function StoryboardPanel({ project, notify }) {
       if (cs.length && !activeChapterId) setActiveChapterId(cs[0].id)
     }).catch((e) => notify(e.message, true))
     api.listCharacters(project.id).then(setCharacters).catch(() => {})
+    api.listScenes(project.id).then(setProjectScenes).catch(() => {})
   }, [project.id])
 
   useEffect(() => {
@@ -612,8 +718,6 @@ function StoryboardPanel({ project, notify }) {
     setBoard(null)
     setVideos({})
     setChapterVideo(null)
-    setPlannedScenes([])
-    api.getChapterScenes(activeChapterId).then((ss) => setPlannedScenes(ss || [])).catch(() => {})
     api.getStoryboard(activeChapterId).then((b) => {
       setBoard(b)
       if (b) loadShotVideos(b.shots)
@@ -625,7 +729,6 @@ function StoryboardPanel({ project, notify }) {
   }, [activeChapterId])
 
   async function loadShotVideos(shots) {
-    // 拉取每个镜头已有的视频状态
     const entries = await Promise.all(shots.map(async (s) => {
       try { return [s.id, await api.getShotVideo(s.id)] }
       catch { return [s.id, null] }
@@ -633,7 +736,6 @@ function StoryboardPanel({ project, notify }) {
     const map = {}
     for (const [id, v] of entries) if (v) map[id] = v
     setVideos(map)
-    // 对仍在 processing 的镜头启动轮询
     for (const [id, v] of entries) {
       if (v && v.status === 'processing') pollShotVideo(id)
     }
@@ -647,7 +749,7 @@ function StoryboardPanel({ project, notify }) {
         setVideos((m) => ({ ...m, [shotId]: v }))
         if (v.status === 'done' || v.status === 'failed') {
           clearInterval(timer)
-          if (v.status === 'done') notify(`镜头视频生成完成`)
+          if (v.status === 'done') notify('镜头视频生成完成')
           else notify(`镜头视频失败：${v.error}`, true)
         }
       } catch { clearInterval(timer) }
@@ -655,7 +757,9 @@ function StoryboardPanel({ project, notify }) {
   }
 
   async function genShotVideo(shotId) {
+    const shot = board?.shots.find((s) => s.id === shotId)
     try {
+      if (shot) await persistShot(shot)
       const v = await api.generateShotVideo(shotId)
       setVideos((m) => ({ ...m, [shotId]: v }))
       notify('已提交图生视频，约需几分钟，完成后自动显示')
@@ -723,20 +827,23 @@ function StoryboardPanel({ project, notify }) {
     } catch (e) { notify(e.message, true) } finally { setLoading(false) }
   }
 
+  async function persistShot(shot, { notify: showNotify = false } = {}) {
+    await api.editShot(shot.id, {
+      shot_size: shot.shot_size || '',
+      camera: shot.camera || '',
+      character_ids: shot.character_ids || [],
+      description: shot.description || '',
+      sound: shot.sound || '',
+      lighting: shot.lighting || '',
+      scene: shot.scene || '',
+      duration: normalizeShotDuration(shot.duration),
+    })
+    if (showNotify) notify('镜头已保存')
+  }
+
   async function saveShot(shot) {
     try {
-      await api.editShot(shot.id, {
-        shot_size: shot.shot_size || '',
-        camera: shot.camera || '',
-        character_ids: shot.character_ids || [],
-        description: shot.description || '',
-        dialogue: shot.dialogue || '',
-        sound: shot.sound || '',
-        lighting: shot.lighting || '',
-        scene: shot.scene || '',
-        duration: Number(shot.duration) || 5,
-      })
-      notify('镜头已保存')
+      await persistShot(shot, { notify: true })
     } catch (e) { notify(e.message, true) }
   }
 
@@ -791,14 +898,9 @@ function StoryboardPanel({ project, notify }) {
       {/* 分镜内容 */}
       <div>
         <div className="row" style={{ marginBottom: 12 }}>
-          <button className="primary" disabled={loading || plannedScenes.length === 0} onClick={generate}>
+          <button className="primary" disabled={loading} onClick={generate}>
             {loading ? '拆分镜中…' : board ? '重新拆分镜' : '拆分镜'}
           </button>
-          {plannedScenes.length === 0 && (
-            <span className="hint" style={{ color: 'var(--danger, #c00)' }}>
-              请先到「场景规划」为本章规划场景，分镜的场景只能从已规划场景里选
-            </span>
-          )}
           {board && board.shots.length > 0 && (
             <button disabled={batchRunning || processingCount > 0} onClick={genAllShotVideos}>
               {batchRunning ? '提交中…'
@@ -874,7 +976,7 @@ function StoryboardPanel({ project, notify }) {
                   </datalist>
                 </div>
                 <div style={{ flex: 1 }}>
-                  <label>运景</label>
+                  <label>运镜</label>
                   <input value={s.camera || ''} list={`camera-${s.id}`}
                     placeholder="下拉选或自定义"
                     onChange={(e) => setShotField(s.id, 'camera', e.target.value)} />
@@ -882,25 +984,39 @@ function StoryboardPanel({ project, notify }) {
                     {CAMERA_OPTIONS.map((o) => <option key={o} value={o} />)}
                   </datalist>
                 </div>
-                <div style={{ width: 90 }}>
+                <div style={{ width: 110 }}>
                   <label>时长(秒)</label>
-                  <input type="number" value={s.duration}
-                    onChange={(e) => setShotField(s.id, 'duration', e.target.value)} />
+                  <input
+                    type="number"
+                    min={SHOT_DURATION_MIN}
+                    max={SHOT_DURATION_MAX}
+                    step={1}
+                    value={s.duration ?? SHOT_DURATION_MIN}
+                    onChange={(e) => {
+                      const v = e.target.value
+                      if (v === '') {
+                        setShotField(s.id, 'duration', '')
+                        return
+                      }
+                      const n = Number(v)
+                      if (!Number.isNaN(n)) setShotField(s.id, 'duration', n)
+                    }}
+                    onBlur={() => setShotField(s.id, 'duration', normalizeShotDuration(s.duration))}
+                  />
                 </div>
               </div>
 
               <div className="row" style={{ marginBottom: 4 }}>
                 <div style={{ flex: 1 }}>
-                  <label>场景（只能选本章已规划场景）</label>
-                  <select value={s.scene || ''}
-                    onChange={(e) => setShotField(s.id, 'scene', e.target.value)}>
-                    {!plannedScenes.some((p) => p.name === s.scene) && (
-                      <option value={s.scene || ''}>{s.scene || '（未指定）'}</option>
-                    )}
-                    {plannedScenes.map((p) => (
-                      <option key={p.id} value={p.name}>{p.name}</option>
+                  <label>场景</label>
+                  <input value={s.scene || ''} list={`shot-scene-${s.id}`}
+                    placeholder="地点/环境，可自由填写"
+                    onChange={(e) => setShotField(s.id, 'scene', e.target.value)} />
+                  <datalist id={`shot-scene-${s.id}`}>
+                    {projectScenes.map((p) => (
+                      <option key={p.id} value={p.name} />
                     ))}
-                  </select>
+                  </datalist>
                 </div>
                 <div style={{ flex: 1 }}>
                   <label>光影</label>
@@ -925,53 +1041,126 @@ function StoryboardPanel({ project, notify }) {
                 })}
               </div>
 
-              <label>画面描述</label>
-              <textarea rows={2} value={s.description}
+              <label>画面描述（含台词；有主体 ID 时用 名称{'<<<'}主体ID{'>>>'} 三尖括号标记）</label>
+              <textarea rows={3} value={s.description}
+                placeholder='例：中景，教室<<<123456>>>内，小明<<<308901>>>说："你好"'
                 onChange={(e) => setShotField(s.id, 'description', e.target.value)} />
-              <label>台词 / 旁白</label>
-              <textarea rows={2} value={s.dialogue}
-                onChange={(e) => setShotField(s.id, 'dialogue', e.target.value)} />
               <label>音效</label>
               <input value={s.sound || ''} placeholder="环境音/拟音，如 雨声、脚步声"
                 onChange={(e) => setShotField(s.id, 'sound', e.target.value)} />
 
               {/* 图生视频 */}
-              <ShotVideo video={videos[s.id]} onGenerate={() => genShotVideo(s.id)} />
+              <ShotMedia
+                video={videos[s.id]}
+                onGenerateVideo={() => genShotVideo(s.id)}
+                onPreviewImage={setPreviewSrc}
+              />
             </div>
           ))
         )}
       </div>
+
+      {previewSrc && (
+        <ImageLightbox src={previewSrc} onClose={() => setPreviewSrc(null)} />
+      )}
     </div>
   )
 }
 
-// 单个镜头的视频区：未生成 → 按钮；处理中 → 进度；完成 → 播放器
-function ShotVideo({ video, onGenerate }) {
-  const status = video?.status
+function ImageLightbox({ src, onClose }) {
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 9999,
+        background: 'rgba(0,0,0,0.85)', display: 'flex',
+        alignItems: 'center', justifyContent: 'center', padding: 24,
+        cursor: 'zoom-out',
+      }}
+    >
+      <img
+        src={src}
+        alt="预览"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          maxWidth: '95vw', maxHeight: '95vh', objectFit: 'contain',
+          borderRadius: 8, cursor: 'default',
+        }}
+      />
+    </div>
+  )
+}
+
+function FrameThumb({ label, src, onPreview }) {
+  if (!src) return null
+  return (
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div className="hint" style={{ marginBottom: 4 }}>{label}</div>
+      <img
+        src={src}
+        alt={label}
+        title="点击放大"
+        onClick={() => onPreview(src)}
+        style={{
+          width: '100%', maxWidth: 240, borderRadius: 8, display: 'block',
+          cursor: 'zoom-in', border: '1px solid var(--border)',
+        }}
+      />
+    </div>
+  )
+}
+
+// 单个镜头的视频区（首尾帧从成片自动提取，只读可放大）
+function ShotMedia({ video, onGenerateVideo, onPreviewImage }) {
+  const videoStatus = video?.status
+
   return (
     <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
-      {!video && (
-        <button className="small primary" onClick={onGenerate}>🎬 生成镜头视频</button>
-      )}
-      {status === 'processing' && (
-        <div className="hint">⏳ 视频生成中（约几分钟，可切走，完成后回来查看）…</div>
-      )}
-      {status === 'failed' && (
-        <div className="row">
-          <span className="error">生成失败：{video.error}</span>
-          <button className="small" onClick={onGenerate}>重试</button>
+      <div>
+        <div className="row" style={{ marginBottom: 6 }}>
+          <b>镜头视频</b>
+          <div className="spacer" />
+          {videoStatus !== 'processing' && (
+            <button className="small primary" onClick={onGenerateVideo}>
+              🎬 {videoStatus === 'done' ? '重新生成视频' : '生成镜头视频'}
+            </button>
+          )}
         </div>
-      )}
-      {status === 'done' && (
-        <div>
-          <video src={api.videoFileUrl(video.id)} controls
-            style={{ width: '100%', maxWidth: 480, borderRadius: 8 }} />
-          <div className="row" style={{ marginTop: 6 }}>
-            <span className="hint">时长 {video.duration}s</span>
-            <button className="small" onClick={onGenerate}>重新生成</button>
+        {videoStatus !== 'done' && (
+          <div className="hint" style={{ marginBottom: 6 }}>
+            直接图生视频；首镜用角色参考图作种子，后续镜头优先衔接上一镜尾帧。
           </div>
-        </div>
-      )}
+        )}
+        {videoStatus === 'processing' && (
+          <div className="hint">⏳ 视频生成中（约几分钟，可切走，完成后自动提取首尾帧）…</div>
+        )}
+        {videoStatus === 'failed' && (
+          <div className="row">
+            <span className="error">生成失败：{video.error}</span>
+            <button className="small" onClick={onGenerateVideo}>重试</button>
+          </div>
+        )}
+        {videoStatus === 'done' && (
+          <div>
+            <video src={api.videoFileUrl(video.id)} controls
+              style={{ width: '100%', maxWidth: 480, borderRadius: 8 }} />
+            <div className="row" style={{ marginTop: 6, marginBottom: 10 }}>
+              <span className="hint">时长 {video.duration}s</span>
+            </div>
+            {(video.poster_url || video.last_frame_url) && (
+              <div>
+                <div className="hint" style={{ marginBottom: 6 }}>成片首尾帧（只读，点击放大）</div>
+                <div className="row" style={{ gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                  <FrameThumb label="首帧" src={video.poster_url} onPreview={onPreviewImage} />
+                  <FrameThumb label="尾帧" src={video.last_frame_url} onPreview={onPreviewImage} />
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

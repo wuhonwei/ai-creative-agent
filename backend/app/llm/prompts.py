@@ -330,31 +330,43 @@ def build_storyboard_prompt(chapter_title: str, chapter_content: str,
                             scenes: list[dict] | None = None) -> list[dict]:
     """把一章正文拆成可逐镜生成视频的分镜脚本。
 
-    characters：本作已知角色 {id, name}，让模型用准确的角色名标注出场角色，
-    便于后续把镜头和角色参考图绑定（保证图生视频用对人、不变脸）。
-    scenes：本章已规划的场景 {name, description}。镜头的 scene 字段只能从这些
-    场景名里选，且名称必须完全一致——保证分镜复用已出图的场景，不再凭空造新场景。
+    characters：本作已知角色 {id, name, kling_element_id?}，让模型用准确的角色名标注出场角色，
+    有主体 ID 时在画面描述里用 名称<<<element_id>>> 标记（三尖括号）；台词也写在画面描述中。
+    scenes：本作已登记场景 {name, description, kling_element_id?}，供参考；scene 字段可自由填写，
+    画面描述中场景也用 场景名<<<element_id>>> 标记（与角色写法一致）。
     """
-    char_list = "、".join(
-        f"{c['name']}(id={c['id']})" for c in characters
-    ) if characters else "（无已登记角色）"
+    def _fmt_char(c: dict) -> str:
+        base = f"{c['name']}(id={c['id']}"
+        eid = (c.get("kling_element_id") or "").strip()
+        return f"{base}, element_id={eid})" if eid else f"{base})"
+
+    def _fmt_scene(s: dict) -> str:
+        base = f"{s['name']}"
+        eid = (s.get("kling_element_id") or "").strip()
+        desc = (s.get("description") or "").strip()
+        parts = [base]
+        if eid:
+            parts.append(f"element_id={eid}")
+        if desc:
+            parts.append(desc)
+        return "：".join(parts) if len(parts) > 1 else base
+
+    char_list = "、".join(_fmt_char(c) for c in characters) if characters else "（无已登记角色）"
 
     scenes = scenes or []
     if scenes:
-        scene_lines = "\n".join(
-            f"  - {s['name']}：{(s.get('description') or '').strip()}" for s in scenes
-        )
-        scene_names = "、".join(f"「{s['name']}」" for s in scenes)
-        scene_block = f"""本章可用场景（镜头的 scene 只能从下面这些里选，名称必须完全一致，禁止新造场景名）：
+        scene_lines = "\n".join(f"  - {_fmt_scene(s)}" for s in scenes)
+        scene_block = f"""已登记场景（参考用；若镜头发生在这些场景，描述中写 场景名<<<element_id>>>）：
 {scene_lines}"""
-        scene_rule = (
-            f"   - scene（场景）：**只能**从本章可用场景里选一个，填写的名称必须与上面列出的场景名**完全一致**"
-            f"（{scene_names}），不允许新造、改写、合并或细化场景名。"
-            f"每个镜头都必须归属到其中一个已有场景。"
-        )
     else:
-        scene_block = "（本章尚未规划场景）"
-        scene_rule = "   - scene（场景）：地点 / 环境（如\"高中教室、雨夜街道、咖啡馆窗边\"）。"
+        scene_block = "（暂无已登记场景）"
+
+    scene_rule = (
+        "   - scene（场景）：地点 / 环境名称，**可自由填写**"
+        "（如\"高中教室、雨夜街道、咖啡馆窗边\"），不必局限于已登记场景。\n"
+        "     画面描述中描写场景环境时，若该场景有 element_id，写作：场景名<<<element_id>>"
+        "（三尖括号，写法与角色一致）。"
+    )
 
     user = f"""你是一个编剧兼导演，擅长把小说文案改编成 AI 生成视频的分镜脚本。请把下面这一章小说正文，拆解成一组连续的镜头(分镜脚本)，用于逐镜生成 3D 动漫风格的动画视频。
 
@@ -374,10 +386,14 @@ def build_storyboard_prompt(chapter_title: str, chapter_content: str,
 1. 按叙事节奏切分镜头，每个镜头是一个连续的画面单元（通常 3-8 秒）。一章一般拆 6-15 个镜头。
 2. 每个镜头按下面的分镜模板给出 8 个字段：
    - shot_size（景别）：远景 / 全景 / 中景 / 近景 / 特写 等。
-   - camera（运景）：运镜方式，如"固定 / 推近 / 拉远 / 横摇 / 跟随 / 俯拍 / 仰拍"等。
+   - camera（运镜）：运镜方式，如"固定 / 推近 / 拉远 / 横摇 / 跟随 / 俯拍 / 仰拍"等。
    - character_ids（人物）：本镜头出场角色的 id 数组（从已登记角色里选，没有出场角色给空数组）。
-   - description（画面描述）：画面内容的客观、可视化描述（人物动作、表情、构图），用于图生视频，不要写台词。
-   - dialogue（台词）：该镜头的台词或旁白原文（没有就留空字符串）。
+   - description（画面描述）：画面内容的客观、可视化描述（人物动作、表情、构图），用于图生视频。
+     **台词也写在本字段**，格式为：角色名<<<element_id>>>说："台词原文"（三尖括号包裹主体 ID）。
+     描写场景环境时，若场景有 element_id，写作：场景名<<<element_id>>>（如 教室<<<123456>>>内）。
+     也可先写角色名/场景名，系统会自动补上 <<<element_id>>>。
+     旁白可写：旁白说："……"。没有台词则只写画面动作。
+   - dialogue（台词）：**固定留空字符串 ""**，不要单独写台词。
    - sound（音效）：环境音 / 拟音 / 音效提示（如"雨声、脚步声、远处人声"，没有可留空）。
    - lighting（光影）：光线与影调（如"黄昏暖光、冷色调逆光、夜晚月光、室内顶光"）。
 {scene_rule}
@@ -389,10 +405,10 @@ def build_storyboard_prompt(chapter_title: str, chapter_content: str,
   "shots": [
     {{
       "shot_size": "景别",
-      "camera": "运景",
+      "camera": "运镜",
       "character_ids": [1, 3],
-      "description": "画面描述",
-      "dialogue": "台词或旁白，可为空",
+      "description": "中景，教室<<<123456>>>内，小明<<<308901>>>站在讲台前，小明<<<308901>>>说：\"你好\"",
+      "dialogue": "",
       "sound": "音效，可为空",
       "lighting": "光影",
       "scene": "场景"

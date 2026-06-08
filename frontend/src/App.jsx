@@ -5,6 +5,7 @@ import OutlineView from './components/OutlineView'
 import ChapterWorkspace from './components/ChapterWorkspace'
 import AssetsView from './components/AssetsView'
 import VideoStudio from './components/VideoStudio'
+import VoiceManager from './components/VoiceManager'
 
 // 请求系统通知权限
 async function requestNotificationPermission() {
@@ -135,6 +136,7 @@ export default function App() {
                 ['workspace', '✍️ 创作工作台'],
                 ['assets', '🎨 素材库'],
                 ['video', '🎬 视频'],
+                ['voices', '🎙 音色'],
               ].map(([k, label]) => (
                 <div
                   key={k}
@@ -164,6 +166,9 @@ export default function App() {
               )}
               {tab === 'video' && (
                 <VideoStudio project={active} notify={notify} />
+              )}
+              {tab === 'voices' && (
+                <VoiceManager project={active} notify={notify} />
               )}
             </div>
           </>

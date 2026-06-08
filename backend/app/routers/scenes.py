@@ -1,12 +1,7 @@
-"""场景管理 + 按章节规划场景（变化检测）+ 无角色场景图生成。
-
-核心能力：
-- 按章节抽取场景，与已有场景比对：同一地点复用、有变化新建（scene_planner）。
-- 章节 ↔ 场景多对多（ChapterScene）：一章一组场景，一个场景可跨多章复用。
-- 场景视觉模板（核心设定/空间结构/光影镜头 + 固定技术约束），生成"无角色"场景图。
-"""
+"""场景管理 + 按章节规划场景（变化检测）+ 可灵文生场景图 + 多图合成主体。"""
 import logging
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -16,8 +11,8 @@ from sqlmodel import Session, select
 
 from app.config import settings
 from app.db import get_session, engine
-from app.llm import image_client
-from app.models import Asset, Chapter, ChapterScene, Project, Scene
+from app.llm import image_client, kling_client
+from app.models import Asset, Chapter, ChapterScene, Project, Scene, SceneRefImage
 from app.services import scene_planner
 
 router = APIRouter(prefix="/api", tags=["scenes"])
@@ -26,9 +21,6 @@ logger = logging.getLogger(__name__)
 VIDEOS_DIR = Path(__file__).parent.parent.parent / "videos"
 VIDEOS_DIR.mkdir(exist_ok=True)
 
-_SCENE_FIELDS = ["style", "time_weather", "color_tone", "space_desc", "materials",
-                 "vista", "light_source", "light_tech", "viewpoint", "composition"]
-
 
 def _safe_unlink(path: Path) -> None:
     try:
@@ -36,6 +28,14 @@ def _safe_unlink(path: Path) -> None:
             path.unlink()
     except OSError as e:
         logger.warning(f"[Scenes] 删除文件失败（已忽略）：{path} - {e}")
+
+
+class SceneImageResponse(BaseModel):
+    id: int
+    scene_id: int
+    status: str
+    error: str
+    image_url: str
 
 
 class SceneResponse(BaseModel):
@@ -54,32 +54,101 @@ class SceneResponse(BaseModel):
     viewpoint: str
     composition: str
     locked_prompt: str
+    kling_element_id: str = ""
     status: str
-    image_url: str          # 场景图服务路径（有图时有效）
-    chapter_ids: list[int]  # 关联的章节
+    image_url: str
+    images: list[SceneImageResponse]
+    chapter_ids: list[int]
+
+
+def _scene_image_resp(img: SceneRefImage) -> SceneImageResponse:
+    return SceneImageResponse(
+        id=img.id,
+        scene_id=img.scene_id,
+        status=img.status,
+        error=img.error or "",
+        image_url=f"/api/scene-images/{img.id}/file" if img.status == "done" and img.image_path else "",
+    )
+
+
+def _list_scene_images(session: Session, scene_id: int) -> list[SceneRefImage]:
+    return session.exec(
+        select(SceneRefImage)
+        .where(SceneRefImage.scene_id == scene_id)
+        .order_by(SceneRefImage.created_at)
+    ).all()
+
+
+def _scene_status_from_images(images: list[SceneRefImage], legacy_path: str) -> str:
+    if any(i.status == "processing" for i in images):
+        return "processing"
+    if any(i.status == "done" for i in images) or legacy_path:
+        return "done"
+    if images and all(i.status == "failed" for i in images):
+        return "failed"
+    return "draft"
 
 
 def _scene_to_resp(session: Session, s: Scene) -> SceneResponse:
     links = session.exec(
         select(ChapterScene).where(ChapterScene.scene_id == s.id)
     ).all()
+    images = _list_scene_images(session, s.id)
+    img_resps = [_scene_image_resp(i) for i in images]
+    first_url = ""
+    for r in img_resps:
+        if r.image_url:
+            first_url = r.image_url
+            break
+    if not first_url and s.image_path:
+        first_url = f"/api/scenes/{s.id}/image"
     return SceneResponse(
         id=s.id, project_id=s.project_id, name=s.name, description=s.description,
         style=s.style, time_weather=s.time_weather, color_tone=s.color_tone,
         space_desc=s.space_desc, materials=s.materials, vista=s.vista,
         light_source=s.light_source, light_tech=s.light_tech,
         viewpoint=s.viewpoint, composition=s.composition,
-        locked_prompt=s.locked_prompt, status=s.status,
-        image_url=f"/api/scenes/{s.id}/image" if s.image_path else "",
+        locked_prompt=s.locked_prompt, kling_element_id=s.kling_element_id or "",
+        status=_scene_status_from_images(images, s.image_path),
+        image_url=first_url,
+        images=img_resps,
         chapter_ids=[link.chapter_id for link in links],
     )
+
+
+def _scene_prompt(s: Scene) -> str:
+    return s.locked_prompt or image_client.build_scene_prompt(
+        style=s.style, time_weather=s.time_weather, color_tone=s.color_tone,
+        space_desc=s.space_desc, materials=s.materials, vista=s.vista,
+        light_source=s.light_source, light_tech=s.light_tech,
+        viewpoint=s.viewpoint, composition=s.composition,
+    )
+
+
+def _collect_scene_image_paths(session: Session, s: Scene) -> list[Path]:
+    """收集可用于合成主体的场景图路径（新多图 + 旧单图兼容）。"""
+    paths: list[Path] = []
+    images = session.exec(
+        select(SceneRefImage)
+        .where(SceneRefImage.scene_id == s.id)
+        .where(SceneRefImage.status == "done")
+        .order_by(SceneRefImage.created_at)
+    ).all()
+    for img in images:
+        p = VIDEOS_DIR / img.image_path
+        if img.image_path and p.exists():
+            paths.append(p)
+    if not paths and s.image_path:
+        legacy = VIDEOS_DIR / s.image_path
+        if legacy.exists():
+            paths.append(legacy)
+    return paths
 
 
 # --------------------------- 列表 / 章节规划 ---------------------------
 @router.get("/projects/{project_id}/scenes")
 def list_scenes(project_id: int,
                 session: Session = Depends(get_session)) -> list[SceneResponse]:
-    """列出项目下所有场景（含关联章节）。"""
     scenes = session.exec(
         select(Scene).where(Scene.project_id == project_id).order_by(Scene.id)
     ).all()
@@ -87,7 +156,6 @@ def list_scenes(project_id: int,
 
 
 class SceneCreate(BaseModel):
-    """手动创建场景（兼容资产页）。"""
     name: str
     description: str = ""
 
@@ -95,7 +163,6 @@ class SceneCreate(BaseModel):
 @router.post("/projects/{project_id}/scenes")
 def create_scene(project_id: int, body: SceneCreate,
                  session: Session = Depends(get_session)) -> SceneResponse:
-    """手动创建一个场景（资产页用）。视觉字段留空，可后续编辑或重规划补全。"""
     if not session.get(Project, project_id):
         raise HTTPException(404, "项目不存在")
     s = Scene(project_id=project_id, name=body.name, description=body.description,
@@ -108,15 +175,14 @@ def create_scene(project_id: int, body: SceneCreate,
 
 
 class PlanResult(BaseModel):
-    reused: list[int]        # 复用的已有场景 id
-    created: list[int]       # 新建的场景 id
-    scenes: list[SceneResponse]   # 本章关联的全部场景
+    reused: list[int]
+    created: list[int]
+    scenes: list[SceneResponse]
 
 
 @router.post("/chapters/{chapter_id}/scenes/plan")
 async def plan_chapter_scenes(chapter_id: int,
                               session: Session = Depends(get_session)) -> PlanResult:
-    """按本章正文抽取场景并做变化检测：同一地点复用、有变化新建。"""
     chapter = session.get(Chapter, chapter_id)
     if not chapter:
         raise HTTPException(404, "章节不存在")
@@ -138,7 +204,6 @@ async def plan_chapter_scenes(chapter_id: int,
 @router.get("/chapters/{chapter_id}/scenes")
 def get_chapter_scenes(chapter_id: int,
                        session: Session = Depends(get_session)) -> list[SceneResponse]:
-    """查本章关联的场景。"""
     links = session.exec(
         select(ChapterScene).where(ChapterScene.chapter_id == chapter_id)
     ).all()
@@ -169,8 +234,6 @@ class SceneEditRequest(BaseModel):
 @router.patch("/scenes/{scene_id}")
 def edit_scene(scene_id: int, req: SceneEditRequest,
                session: Session = Depends(get_session)) -> SceneResponse:
-    """编辑场景字段，自动重算 locked_prompt。"""
-    from datetime import datetime
     s = session.get(Scene, scene_id)
     if not s:
         raise HTTPException(404, "场景不存在")
@@ -190,81 +253,203 @@ def edit_scene(scene_id: int, req: SceneEditRequest,
     return _scene_to_resp(session, s)
 
 
-# --------------------------- 场景图生成 ---------------------------
-async def _run_scene_image(scene_id: int):
-    """后台任务：文生图出"无角色场景图" → 回写 Scene。"""
-    from datetime import datetime
+# --------------------------- 可灵文生场景图（多图） ---------------------------
+async def _run_scene_ref_image(ref_image_id: int):
+    """后台任务：可灵文生图生成单张场景参考图。"""
     with Session(engine) as session:
-        s = session.get(Scene, scene_id)
+        img = session.get(SceneRefImage, ref_image_id)
+        if not img:
+            return
+        s = session.get(Scene, img.scene_id)
         if not s:
+            img.status = "failed"
+            img.error = "场景不存在"
+            session.add(img)
+            session.commit()
             return
         try:
-            prompt = s.locked_prompt or image_client.build_scene_prompt(
-                style=s.style, time_weather=s.time_weather, color_tone=s.color_tone,
-                space_desc=s.space_desc, materials=s.materials, vista=s.vista,
-                light_source=s.light_source, light_tech=s.light_tech,
-                viewpoint=s.viewpoint, composition=s.composition,
-            )
-            filename = f"scene_{scene_id}_{uuid.uuid4().hex[:10]}.png"
+            prompt = img.prompt or _scene_prompt(s)
+            filename = f"scene_{s.id}_{uuid.uuid4().hex[:10]}.png"
             file_path = VIDEOS_DIR / filename
-            await image_client.generate_image(
-                prompt=prompt, width=settings.image_width,
-                height=settings.image_height, save_path=file_path,
-            )
-            if s.image_path:
-                _safe_unlink(VIDEOS_DIR / s.image_path)
-            s.image_path = filename
-            s.status = "done"
+            await kling_client.generate_image(prompt=prompt, save_path=file_path)
+            img.image_path = filename
+            img.prompt = prompt
+            img.status = "done"
+            img.error = ""
             s.updated_at = datetime.utcnow()
-            logger.info(f"[Scenes] 场景图完成：scene_id={scene_id}")
+            session.add(s)
+            logger.info(f"[Scenes] 场景图完成：scene_id={s.id}, ref_id={ref_image_id}")
         except Exception as e:
-            s.status = "failed"
-            s.updated_at = datetime.utcnow()
-            logger.error(f"[Scenes] 场景图失败：{e}", exc_info=True)
-        session.add(s)
+            img.status = "failed"
+            img.error = str(e)[:500]
+            logger.error(f"[Scenes] 场景图失败 ref_id={ref_image_id}：{e}", exc_info=True)
+        session.add(img)
         session.commit()
 
 
-@router.post("/scenes/{scene_id}/image")
-def generate_scene_image(scene_id: int, background: BackgroundTasks,
-                         session: Session = Depends(get_session)) -> SceneResponse:
-    """为场景生成无角色场景图（后台异步），立即返回 processing 状态。"""
+@router.get("/scenes/{scene_id}/images")
+def list_scene_images_api(scene_id: int,
+                          session: Session = Depends(get_session)) -> list[SceneImageResponse]:
     s = session.get(Scene, scene_id)
     if not s:
         raise HTTPException(404, "场景不存在")
-    s.status = "processing"
+    return [_scene_image_resp(i) for i in _list_scene_images(session, scene_id)]
+
+
+@router.post("/scenes/{scene_id}/images")
+def generate_scene_image(scene_id: int, background: BackgroundTasks,
+                         session: Session = Depends(get_session)) -> SceneImageResponse:
+    """可灵文生图生成一张场景图（可重复调用生成多张）。"""
+    if not settings.kling_configured:
+        raise HTTPException(400, "未配置可灵 AccessKey / SecretKey")
+
+    s = session.get(Scene, scene_id)
+    if not s:
+        raise HTTPException(404, "场景不存在")
+
+    prompt = _scene_prompt(s)
+    img = SceneRefImage(
+        project_id=s.project_id,
+        scene_id=s.id,
+        prompt=prompt,
+        status="processing",
+    )
+    session.add(img)
+    s.updated_at = datetime.utcnow()
+    session.add(s)
+    session.commit()
+    session.refresh(img)
+
+    background.add_task(_run_scene_ref_image, img.id)
+    logger.info(f"[Scenes] 提交场景文生图：scene_id={scene_id}, ref_id={img.id}")
+    return _scene_image_resp(img)
+
+
+@router.post("/scenes/{scene_id}/image")
+def generate_scene_image_legacy(scene_id: int, background: BackgroundTasks,
+                                session: Session = Depends(get_session)) -> SceneResponse:
+    """兼容旧端点：等同新增一张场景图。"""
+    generate_scene_image(scene_id, background, session)
+    s = session.get(Scene, scene_id)
+    return _scene_to_resp(session, s)
+
+
+@router.get("/scene-images/{image_id}/file")
+def get_scene_ref_image_file(image_id: int,
+                             session: Session = Depends(get_session)) -> FileResponse:
+    img = session.get(SceneRefImage, image_id)
+    if not img or not img.image_path:
+        raise HTTPException(404, "场景图不存在")
+    fp = VIDEOS_DIR / img.image_path
+    if not fp.exists():
+        raise HTTPException(404, "场景图文件不存在")
+    return FileResponse(fp, media_type="image/png")
+
+
+@router.delete("/scene-images/{image_id}")
+def delete_scene_ref_image(image_id: int,
+                           session: Session = Depends(get_session)) -> dict:
+    img = session.get(SceneRefImage, image_id)
+    if not img:
+        raise HTTPException(404, "场景图不存在")
+    if img.image_path:
+        _safe_unlink(VIDEOS_DIR / img.image_path)
+    session.delete(img)
+    session.commit()
+    return {"message": "场景图已删除"}
+
+
+# --------------------------- 场景主体合成 ---------------------------
+@router.post("/scenes/{scene_id}/element")
+async def create_scene_element(scene_id: int,
+                               session: Session = Depends(get_session)) -> SceneResponse:
+    """用多张场景参考图合成场景主体 ID（标签：场景 o_106）。"""
+    if not settings.kling_configured:
+        raise HTTPException(400, "未配置可灵 AccessKey / SecretKey")
+
+    s = session.get(Scene, scene_id)
+    if not s:
+        raise HTTPException(404, "场景不存在")
+
+    paths = _collect_scene_image_paths(session, s)
+    if not paths:
+        raise HTTPException(400, "请先生成至少一张场景图，再合成主体 ID")
+
+    frontal = paths[0]
+    refer = paths[1:4]
+    desc = (_scene_prompt(s) or s.description or s.name)[:100]
+    try:
+        result = await kling_client.create_and_poll_custom_element(
+            element_name=s.name,
+            element_description=desc,
+            frontal_image_path=frontal,
+            refer_image_paths=refer,
+            voice_id="",
+            tag_list=kling_client.scene_element_tags(),
+        )
+    except kling_client.KlingError as e:
+        raise HTTPException(502, str(e)) from e
+
+    s.kling_element_id = result["element_id"]
+    s.updated_at = datetime.utcnow()
     session.add(s)
     session.commit()
     session.refresh(s)
-    background.add_task(_run_scene_image, scene_id)
+    logger.info(
+        f"[Scenes] 场景主体合成成功：scene_id={scene_id}, "
+        f"element_id={s.kling_element_id}, refs={len(paths)}"
+    )
     return _scene_to_resp(session, s)
 
 
 @router.post("/projects/{project_id}/scenes/generate-images")
 def generate_all_scene_images(project_id: int, background: BackgroundTasks,
                               session: Session = Depends(get_session)) -> dict:
-    """一键为项目下所有"还没出图"的场景批量生成场景图。"""
+    """为尚无场景图的场景各提交一张可灵文生图。"""
+    if not settings.kling_configured:
+        raise HTTPException(400, "未配置可灵 AccessKey / SecretKey")
+
     scenes = session.exec(
         select(Scene).where(Scene.project_id == project_id)
     ).all()
     queued = 0
     for s in scenes:
-        if s.image_path and s.status == "done":
+        done_count = session.exec(
+            select(SceneRefImage)
+            .where(SceneRefImage.scene_id == s.id)
+            .where(SceneRefImage.status == "done")
+        ).all()
+        if done_count or s.image_path:
             continue
-        s.status = "processing"
-        session.add(s)
-        background.add_task(_run_scene_image, s.id)
+        prompt = _scene_prompt(s)
+        img = SceneRefImage(
+            project_id=s.project_id, scene_id=s.id, prompt=prompt, status="processing",
+        )
+        session.add(img)
+        background.add_task(_run_scene_ref_image, img.id)
         queued += 1
     session.commit()
     return {"queued": queued, "total": len(scenes)}
 
 
 @router.get("/scenes/{scene_id}/image")
-def get_scene_image(scene_id: int,
-                    session: Session = Depends(get_session)) -> FileResponse:
-    """取场景图文件。"""
+def get_scene_image_legacy(scene_id: int,
+                           session: Session = Depends(get_session)) -> FileResponse:
+    """兼容旧端点：返回首张场景图。"""
     s = session.get(Scene, scene_id)
-    if not s or not s.image_path:
+    if not s:
+        raise HTTPException(404, "场景不存在")
+    images = session.exec(
+        select(SceneRefImage)
+        .where(SceneRefImage.scene_id == scene_id)
+        .where(SceneRefImage.status == "done")
+        .order_by(SceneRefImage.created_at)
+    ).all()
+    if images and images[0].image_path:
+        fp = VIDEOS_DIR / images[0].image_path
+        if fp.exists():
+            return FileResponse(fp, media_type="image/png")
+    if not s.image_path:
         raise HTTPException(404, "场景图不存在")
     fp = VIDEOS_DIR / s.image_path
     if not fp.exists():
@@ -274,11 +459,9 @@ def get_scene_image(scene_id: int,
 
 @router.delete("/scenes/{scene_id}")
 def delete_scene(scene_id: int, session: Session = Depends(get_session)) -> dict:
-    """删除场景（含章节关联、场景图文件）。"""
     s = session.get(Scene, scene_id)
     if not s:
         raise HTTPException(404, "场景不存在")
-    # 旧资产保护：若有图片资产挂在该场景，提示先删
     assets = session.exec(
         select(Asset).where(Asset.asset_type == "scene").where(Asset.ref_id == scene_id)
     ).all()
@@ -289,6 +472,13 @@ def delete_scene(scene_id: int, session: Session = Depends(get_session)) -> dict
     ).all()
     for link in links:
         session.delete(link)
+    ref_images = session.exec(
+        select(SceneRefImage).where(SceneRefImage.scene_id == scene_id)
+    ).all()
+    for img in ref_images:
+        if img.image_path:
+            _safe_unlink(VIDEOS_DIR / img.image_path)
+        session.delete(img)
     if s.image_path:
         _safe_unlink(VIDEOS_DIR / s.image_path)
     session.delete(s)

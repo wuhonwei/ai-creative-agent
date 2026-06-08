@@ -1,13 +1,14 @@
-"""镜头图生视频路由。
+"""镜头图生视频路由（方案 C：跳过独立文生首帧）。
 
-以"首帧基准图"作首帧调用可灵，杜绝跨镜头变脸：
-  镜头有出场角色 → 取该角色的首帧基准参考图(is_primary)做首帧；
-  没有出场角色 → 需调用方提供首帧图 asset。
+图生视频种子图：上一镜尾帧 > 角色参考图（首帧基准）。
+出片完成后用 ffmpeg 从视频提取首帧/尾帧供前端展示。
 
 生成耗时分钟级，采用后台任务 + 轮询：
-  POST /shots/{id}/video        立即建 Video(status=processing) 并后台跑，返回该记录
+  POST /shots/{id}/video        图生视频（后台异步）
   GET  /shots/{id}/video        查当前镜头视频状态
   GET  /videos/{id}/file        取视频文件
+  GET  /videos/{id}/poster      取首帧图（从成片提取）
+  GET  /videos/{id}/last-frame  取尾帧图（从成片提取）
 """
 import logging
 import uuid
@@ -20,11 +21,14 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from app.config import settings
+from app.config import resolve_video_duration, settings
 from app.db import get_session, engine
 from app.llm import kling_client, image_client
-from app.models import Character, CharacterDesign, CharacterRefImage, Shot, Storyboard, Video
-from app.services import compose
+from app.models import (
+    Character, CharacterDesign, CharacterRefImage, Scene,
+    Shot, Storyboard, Video,
+)
+from app.services import compose, video_frames
 
 router = APIRouter(prefix="/api", tags=["videos"])
 logger = logging.getLogger(__name__)
@@ -55,14 +59,72 @@ class VideoResponse(BaseModel):
     duration: float
     status: str
     error: str
-    video_url: str        # 本地文件服务路径（done 时有效）
+    video_url: str
+    poster_url: str = ""
+    last_frame_url: str = ""
 
 
 def _video_to_resp(v: Video) -> VideoResponse:
+    done = v.status == "done"
     return VideoResponse(
         id=v.id, project_id=v.project_id, video_type=v.video_type, ref_id=v.ref_id,
         prompt=v.prompt, duration=v.duration, status=v.status, error=v.error,
-        video_url=f"/api/videos/{v.id}/file" if v.status == "done" else "",
+        video_url=f"/api/videos/{v.id}/file" if done and v.video_path else "",
+        poster_url=f"/api/videos/{v.id}/poster" if done and v.poster_path else "",
+        last_frame_url=f"/api/videos/{v.id}/last-frame" if done and v.last_frame_path else "",
+    )
+
+
+def _unlink_video_assets(v: Video) -> None:
+    if v.video_path:
+        _safe_unlink(VIDEOS_DIR / v.video_path)
+    if v.poster_path:
+        _safe_unlink(VIDEOS_DIR / v.poster_path)
+    if getattr(v, "last_frame_path", "") and v.last_frame_path:
+        _safe_unlink(VIDEOS_DIR / v.last_frame_path)
+
+
+def _get_prev_shot_last_frame_name(session: Session, shot: Shot) -> str:
+    """取同一分镜中、排序更靠前的最近一镜的尾帧文件名。"""
+    prev_shots = session.exec(
+        select(Shot).where(Shot.storyboard_id == shot.storyboard_id)
+        .where(Shot.order_index < shot.order_index)
+        .order_by(Shot.order_index.desc())
+    ).all()
+    for prev in prev_shots:
+        pv = session.exec(
+            select(Video).where(Video.video_type == "shot").where(Video.ref_id == prev.id)
+            .where(Video.status == "done").order_by(Video.created_at.desc())
+        ).first()
+        if pv and pv.last_frame_path and (VIDEOS_DIR / pv.last_frame_path).exists():
+            return pv.last_frame_path
+    return ""
+
+
+def _resolve_seed_image(
+    session: Session, shot: Shot, ref_image_names: list[str],
+) -> tuple[Path, str]:
+    """方案 C 种子图：上一镜尾帧优先，否则角色参考图。"""
+    prev_last = _get_prev_shot_last_frame_name(session, shot)
+    if prev_last:
+        return VIDEOS_DIR / prev_last, "上一镜尾帧"
+    for name in ref_image_names:
+        p = VIDEOS_DIR / name
+        if p.exists():
+            return p, "角色参考图"
+    raise RuntimeError(
+        "无法找到图生视频种子图：请为出场角色生成参考图，或先生成前一镜头视频"
+    )
+
+
+def _can_resolve_seed(session: Session, shot: Shot, ref_image_names: list[str]) -> tuple[bool, str]:
+    if _get_prev_shot_last_frame_name(session, shot):
+        return True, ""
+    if any((VIDEOS_DIR / n).exists() for n in ref_image_names if n):
+        return True, ""
+    return False, (
+        "无法找到图生视频种子图：请为出场角色生成参考图（首帧基准），"
+        "或先生成排序更靠前镜头的视频以衔接尾帧"
     )
 
 
@@ -78,69 +140,49 @@ def _parse_all_ids(s: str) -> list[int]:
     return ids
 
 
-async def _run_generation(video_id: int, shot_id: int, frame_prompt: str,
-                          edit_prompt: str, ref_image_names: list[str],
-                          motion_prompt: str, duration: int,
-                          element_ids: list[str], kling_prompt: str):
-    """后台任务：先出"符合本镜场景"的首帧 → 再图生视频 → 回写 Video。
-
-    首帧生成两条路：
-      有角色锁定参考图 → 用 edit_image(qwen-image-edit) 以参考图重绘，
-        角色长相严格锁定参考图，姿势/环境按本镜场景（edit_prompt）；
-        多人物镜头会把所有出场角色的参考图一起喂进去，各自锁形象。
-      没有参考图 → 退回纯文生图（frame_prompt，场景优先+外貌词）。
-    motion_prompt：运动/运镜描述，传给可灵控制动态。
-    element_ids：可灵 element_id 列表（角色/场景一致性 ID）。
-    kling_prompt：带 <<element_id>> 标记的提示词（用于可灵 API）。
-    用独立 session（脱离请求生命周期）。
-    """
+async def _run_generation(
+    video_id: int, shot_id: int,
+    kling_prompt: str, element_ids: list[str], ref_image_names: list[str],
+    motion_prompt: str, duration: int,
+):
+    """后台任务：种子图 → 图生视频 → 提取首尾帧。"""
     with Session(engine) as session:
         v = session.get(Video, video_id)
         if not v:
             return
-        frame_path = None
+        shot = session.get(Shot, shot_id)
         try:
-            # 1) 生成符合本镜场景的首帧图
-            frame_name = f"frame_{shot_id}_{uuid.uuid4().hex[:10]}.png"
-            frame_path = VIDEOS_DIR / frame_name
-            ref_paths = [VIDEOS_DIR / n for n in (ref_image_names or [])]
-            ref_paths = [p for p in ref_paths if p.exists()]
-            if ref_paths:
-                # 以角色锁定参考图重绘：长相锁定，姿势/场景按本镜
-                refs_label = ", ".join(p.name for p in ref_paths)
-                logger.info(f"[Videos] 镜头 {shot_id} 参考图重绘首帧"
-                            f"（{len(ref_paths)} 张 refs=[{refs_label}]）：{edit_prompt[:80]}")
-                await image_client.edit_image(
-                    prompt=edit_prompt,
-                    ref_image_paths=ref_paths,
-                    width=settings.image_width, height=settings.image_height,
-                    save_path=frame_path,
-                )
-            else:
-                # 无参考图，退回纯文生图（场景优先 + 外貌词）
-                logger.info(f"[Videos] 镜头 {shot_id} 文生首帧（无参考图）："
-                            f"{frame_prompt[:80]}")
-                await image_client.generate_image(
-                    prompt=frame_prompt,
-                    width=settings.image_width, height=settings.image_height,
-                    save_path=frame_path,
-                )
-            v.poster_path = frame_name  # 存首帧图作封面
+            if not shot:
+                raise RuntimeError("镜头不存在")
+            seed_path, seed_source = _resolve_seed_image(session, shot, ref_image_names)
+            logger.info(f"[Videos] 镜头 {shot_id} 图生视频种子：{seed_source} → {seed_path.name}")
 
-            # 2) 图生视频：以该首帧出片，使用 element_id 确保角色/场景一致性
             filename = f"shot_{shot_id}_{uuid.uuid4().hex[:10]}.mp4"
             save_path = VIDEOS_DIR / filename
             result = await kling_client.image_to_video(
-                image_path=frame_path,
-                prompt=kling_prompt or motion_prompt,  # 优先使用带 element_id 标记的 prompt
+                image_path=seed_path,
+                prompt=kling_prompt or motion_prompt,
                 duration=duration,
                 element_list=element_ids if element_ids else None,
+                negative_prompt=kling_client.KLING_AVOID_TEXT_NEGATIVE,
                 save_path=save_path,
             )
+
+            first_name, last_name = video_frames.extract_first_and_last_frames(
+                save_path, VIDEOS_DIR, shot_id,
+            )
+            if v.poster_path and v.poster_path not in (first_name, last_name):
+                _safe_unlink(VIDEOS_DIR / v.poster_path)
+            if v.last_frame_path and v.last_frame_path not in (first_name, last_name):
+                _safe_unlink(VIDEOS_DIR / v.last_frame_path)
+
             v.video_path = filename
+            v.poster_path = first_name
+            v.last_frame_path = last_name
             v.duration = result["duration"]
             v.task_id = result["task_id"]
             v.status = "done"
+            v.error = ""
             v.updated_at = datetime.utcnow()
             logger.info(f"[Videos] 镜头 {shot_id} 出片完成：video_id={video_id}")
         except Exception as e:
@@ -183,13 +225,74 @@ def _character_appearance(session: Session, character_id: int) -> Optional[str]:
     )
 
 
+def _append_unique(target: list[str], value: str) -> None:
+    if value and value not in target:
+        target.append(value)
+
+
+def _match_project_scene(session: Session, project_id: int, scene_name: str) -> Scene | None:
+    """把镜头 scene 字段匹配到项目已登记场景。"""
+    s = (scene_name or "").strip()
+    if not s:
+        return None
+    scenes = session.exec(
+        select(Scene).where(Scene.project_id == project_id)
+    ).all()
+    for sc in scenes:
+        if sc.name == s:
+            return sc
+    for sc in scenes:
+        if sc.name and (sc.name in s or s in sc.name):
+            return sc
+    return None
+
+
+def _build_kling_video_prompt(
+    session: Session,
+    shot: Shot,
+    board: Storyboard,
+    chars: list[dict],
+) -> tuple[str, list[str]]:
+    """构建可灵图生视频 prompt，并收集 element_id 列表。"""
+    element_ids: list[str] = []
+    entities: list[tuple[str, str]] = []
+    desc = shot.description
+
+    for c in chars:
+        eid = (c.get("kling_element_id") or "").strip()
+        if eid:
+            _append_unique(element_ids, eid)
+            entities.append((c["name"], eid))
+
+    if shot.scene:
+        scene = _match_project_scene(session, board.project_id, shot.scene)
+        if scene and scene.kling_element_id:
+            eid = scene.kling_element_id.strip()
+            _append_unique(element_ids, eid)
+            entities.append((scene.name, eid))
+
+    desc = kling_client.apply_element_tags(desc, element_ids, entities)
+
+    dialogue = (shot.dialogue or "").strip()
+    if dialogue and dialogue not in desc and chars:
+        speaker = chars[0]
+        eid = (speaker.get("kling_element_id") or "").strip()
+        name_part = (
+            kling_client.entity_prompt_tag(speaker["name"], eid) if eid else speaker["name"]
+        )
+        speech = f'{name_part}说："{dialogue}"'
+        desc = f"{desc}，{speech}" if desc else speech
+    desc = f"{desc}，{kling_client.KLING_AVOID_TEXT_POSITIVE}" if desc else kling_client.KLING_AVOID_TEXT_POSITIVE
+
+    return desc, element_ids
+
+
 def _collect_shot_characters(session: Session, shot: Shot) -> tuple[list[dict], str]:
-    """收集本镜所有出场角色的 {name, appearance, ref_image, kling_element_id}，按 character_ids 顺序。
+    """收集本镜所有出场角色的设定与可灵 ID，按 character_ids 顺序。
 
     只纳入"有锁定设定（外貌词）"的角色——没设定的没法保证形象一致，跳过它。
     返回 (chars, reason)：chars 为空时 reason 给出原因。
-    每项：{"id", "name", "appearance", "ref_image"(可能 None), "kling_element_id"}。
-    ref_image 顺序与 appearance 顺序严格对应，供 edit_image 多图按序锁脸。
+    每项：{"id", "name", "appearance", "ref_image", "kling_element_id", "kling_voice_id"}。
     """
     cids = _parse_all_ids(shot.character_ids)
     if not cids:
@@ -210,6 +313,7 @@ def _collect_shot_characters(session: Session, shot: Shot) -> tuple[list[dict], 
             select(CharacterDesign).where(CharacterDesign.character_id == cid)
         ).first()
         kling_eid = d.kling_element_id if d and d.kling_element_id else ""
+        kling_vid = d.kling_voice_id if d and d.kling_voice_id else ""
 
         chars.append({
             "id": cid,
@@ -217,6 +321,7 @@ def _collect_shot_characters(session: Session, shot: Shot) -> tuple[list[dict], 
             "appearance": appearance,
             "ref_image": _primary_ref_image_name(session, cid),
             "kling_element_id": kling_eid,
+            "kling_voice_id": kling_vid,
         })
 
     if not chars:
@@ -225,109 +330,67 @@ def _collect_shot_characters(session: Session, shot: Shot) -> tuple[list[dict], 
     return chars, ""
 
 
-def _queue_shot_video(session: Session, shot: Shot, board: Storyboard,
-                      background: BackgroundTasks) -> tuple[Optional[Video], str]:
-    """准备并排队单个镜头的图生视频任务。
-
-    流程：收集本镜所有出场角色（设定词 + 锁定参考图）→ 文生图/参考图重绘首帧 → 图生视频。
-    多人物镜头会把所有出场角色的参考图一起喂进 edit_image，各自锁形象。
-    成功返回 (Video(processing), "")；无法生成返回 (None, 原因)。
-    供单镜头端点（失败抛错）和批量端点（失败软跳过）共用。
-    """
+def _prepare_shot_media(
+    session: Session, shot: Shot, board: Storyboard,
+) -> tuple[Optional[dict], str]:
+    """准备镜头图生视频所需的提示词与角色信息。"""
     if not shot.description.strip():
         return None, "镜头没有画面描述"
 
-    # 收集所有出场角色的设定词 + 锁定参考图 + element_id（按出场顺序，跳过没设定的）
     chars, reason = _collect_shot_characters(session, shot)
     if not chars:
         return None, reason
 
-    # 收集所有 element_id（角色 + 场景）
-    element_ids = []
-    kling_prompt_parts = []
-
-    # 构建带 <<element_id>> 标记的 prompt
-    # 例如：乔病病<<girl1>>冲进了<<place1>>
-    desc = shot.description
-
-    # 为每个角色添加 element_id 标记
-    for c in chars:
-        eid = c.get("kling_element_id", "")
-        if eid:
-            element_ids.append(eid)
-            # 在角色名后添加 <<element_id>> 标记
-            name = c["name"]
-            if name in desc:
-                desc = desc.replace(name, f"{name}<<{eid}>>", 1)
-
-    # 获取场景的 element_id（如果有）
-    if shot.scene:
-        # 尝试从 Scene 表查找场景的 element_id
-        from app.models import Scene, ChapterScene
-        # 先找本章关联的场景
-        board = session.get(Storyboard, shot.storyboard_id)
-        if board and board.chapter_id:
-            scene_links = session.exec(
-                select(ChapterScene).where(ChapterScene.chapter_id == board.chapter_id)
-            ).all()
-            for link in scene_links:
-                scene = session.get(Scene, link.scene_id)
-                if scene and scene.kling_element_id and shot.scene in scene.name:
-                    element_ids.append(scene.kling_element_id)
-                    # 在场景名后添加标记
-                    if scene.name in desc:
-                        desc = desc.replace(scene.name, f"{scene.name}<<{scene.kling_element_id}>>", 1)
-                    break
-
-    kling_prompt = desc  # 带 element_id 标记的 prompt
-
-    # 首帧图提示词：场景优先 + 外貌锁定（纯文生图回退用，拼所有出场角色外貌）
-    appearance_all = "；".join(
-        f"{c['name']}（{c['appearance']}）" if len(chars) > 1 else c["appearance"]
-        for c in chars
-    )
-    frame_prompt = image_client.build_shot_frame_prompt(
-        appearance=appearance_all, scene_desc=shot.description, camera=shot.camera,
-        shot_size=shot.shot_size, scene=shot.scene, lighting=shot.lighting,
-    )
-    # 参考图重绘指令：锁定各角色形象，按本镜场景改姿势/环境（多人逐个点名）
-    edit_prompt = image_client.build_shot_edit_prompt(
-        scene_desc=shot.description, camera=shot.camera, characters=chars,
-        shot_size=shot.shot_size, scene=shot.scene, lighting=shot.lighting,
-    )
-    # 各角色锁定参考图（顺序与 edit_prompt 中角色顺序一致），过滤掉没参考图的
+    kling_prompt, element_ids = _build_kling_video_prompt(session, shot, board, chars)
     ref_image_names = [c["ref_image"] for c in chars if c["ref_image"]]
-    # 运动提示词：画面描述 + 运镜
+    ok, seed_reason = _can_resolve_seed(session, shot, ref_image_names)
+    if not ok:
+        return None, seed_reason
+
     motion = shot.description
     if shot.camera:
         motion = f"{motion}，运镜：{shot.camera}"
 
-    # 删除该镜头的旧视频记录（重生成）
+    return {
+        "chars": chars,
+        "kling_prompt": kling_prompt,
+        "element_ids": element_ids,
+        "ref_image_names": ref_image_names,
+        "motion": motion,
+    }, ""
+
+
+def _queue_shot_video(session: Session, shot: Shot, board: Storyboard,
+                      background: BackgroundTasks) -> tuple[Optional[Video], str]:
+    """准备并排队单个镜头的图生视频任务（方案 C：种子图直出，完成后提取首尾帧）。"""
+    params, reason = _prepare_shot_media(session, shot, board)
+    if not params:
+        return None, reason
+
     olds = session.exec(
         select(Video).where(Video.video_type == "shot").where(Video.ref_id == shot.id)
     ).all()
     for o in olds:
-        if o.video_path:
-            _safe_unlink(VIDEOS_DIR / o.video_path)
-        if o.poster_path:
-            _safe_unlink(VIDEOS_DIR / o.poster_path)
+        _unlink_video_assets(o)
         session.delete(o)
     session.commit()
 
-    duration = int(shot.duration) if shot.duration in (5, 10) else settings.video_duration
+    duration = resolve_video_duration(shot.duration)
     v = Video(project_id=board.project_id, video_type="shot", ref_id=shot.id,
-              prompt=motion, status="processing", duration=0.0)
+              prompt=params["motion"], status="processing", duration=0.0)
     session.add(v)
     session.commit()
     session.refresh(v)
 
-    background.add_task(_run_generation, v.id, shot.id, frame_prompt, edit_prompt,
-                        ref_image_names, motion, duration, element_ids, kling_prompt)
-    names = "、".join(c["name"] for c in chars)
-    element_info = f"，element_ids={len(element_ids)}" if element_ids else ""
+    background.add_task(
+        _run_generation, v.id, shot.id,
+        params["kling_prompt"], params["element_ids"], params["ref_image_names"],
+        params["motion"], duration,
+    )
+    names = "、".join(c["name"] for c in params["chars"])
+    element_info = f"，element_ids={len(params['element_ids'])}" if params["element_ids"] else ""
     logger.info(f"[Videos] 镜头 {shot.id} 开始后台出片：video_id={v.id}"
-                f"，出场角色=[{names}]，参考图 {len(ref_image_names)} 张"
-                f"{'（纯文生图）' if not ref_image_names else ''}{element_info}")
+                f"，duration={duration}s，出场角色=[{names}]{element_info}")
     return v, ""
 
 
@@ -419,14 +482,39 @@ def get_video_file(video_id: int,
     return FileResponse(fp, media_type="video/mp4")
 
 
+@router.get("/videos/{video_id}/poster")
+def get_video_poster(video_id: int,
+                     session: Session = Depends(get_session)) -> FileResponse:
+    """取首帧图（从成片提取）。"""
+    v = session.get(Video, video_id)
+    if not v or not v.poster_path:
+        raise HTTPException(404, "首帧图不存在")
+    fp = VIDEOS_DIR / v.poster_path
+    if not fp.exists():
+        raise HTTPException(404, "首帧图文件不存在")
+    return FileResponse(fp, media_type="image/png")
+
+
+@router.get("/videos/{video_id}/last-frame")
+def get_video_last_frame(video_id: int,
+                         session: Session = Depends(get_session)) -> FileResponse:
+    """取尾帧图（从成片提取）。"""
+    v = session.get(Video, video_id)
+    if not v or not v.last_frame_path:
+        raise HTTPException(404, "尾帧图不存在")
+    fp = VIDEOS_DIR / v.last_frame_path
+    if not fp.exists():
+        raise HTTPException(404, "尾帧图文件不存在")
+    return FileResponse(fp, media_type="image/png")
+
+
 @router.delete("/videos/{video_id}")
 def delete_video(video_id: int, session: Session = Depends(get_session)) -> dict:
     """删除视频（记录 + 文件）。"""
     v = session.get(Video, video_id)
     if not v:
         raise HTTPException(404, "视频不存在")
-    if v.video_path:
-        _safe_unlink(VIDEOS_DIR / v.video_path)
+    _unlink_video_assets(v)
     session.delete(v)
     session.commit()
     return {"message": "视频已删除"}

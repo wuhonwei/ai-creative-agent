@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from app.config import resolve_video_duration
 from app.db import get_session
 from app.models import Chapter, Project, Shot, Storyboard
 from app.services import storyboard as storyboard_service
@@ -134,7 +135,7 @@ def edit_shot(shot_id: int, req: ShotEditRequest,
     if req.scene is not None:
         shot.scene = req.scene
     if req.duration is not None:
-        shot.duration = req.duration
+        shot.duration = float(resolve_video_duration(req.duration))
     session.add(shot)
     session.commit()
     session.refresh(shot)

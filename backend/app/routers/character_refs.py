@@ -1,4 +1,4 @@
-"""角色视觉设定锁定 + 参考图（正/侧/斜/全身立绘）生成与管理。
+"""角色视觉设定锁定 + 参考图（脸部特写/正/侧/背/全身）生成与管理。
 
 一致性核心：
 - CharacterDesign 存一份"锁定提示词"(locked_prompt)，全剧统一复用。
@@ -18,7 +18,7 @@ from sqlmodel import Session, select
 
 from app.config import settings
 from app.db import get_session
-from app.llm import image_client
+from app.llm import image_client, kling_client
 from app.models import Character, CharacterDesign, CharacterRefImage, Project
 from app.services import character_design as character_design_service
 
@@ -31,6 +31,11 @@ VIDEOS_DIR.mkdir(exist_ok=True)
 
 # 默认生成的 5 个视角（顺序即展示顺序）：脸部特写 / 正 / 侧 / 背 / 全身
 DEFAULT_VIEWS = ("face_closeup", "front", "side", "back", "full_body")
+# 合成主体 ID 必须齐备的五视角（本地全部生成，保证设定完整）
+REQUIRED_ELEMENT_VIEWS = ("face_closeup", "front", "side", "back", "full_body")
+# 提交可灵时的选图优先级（从五视角中最多取 3 张传给 API）
+ELEMENT_SUBMIT_PRIORITY = ("front", "side", "back", "face_closeup", "full_body")
+MAX_ELEMENT_SUBMIT_IMAGES = 3
 # 接受集：多含旧的斜视图（three_quarter），兼容历史已生成图的重生成
 VALID_VIEWS = ("face_closeup", "front", "side", "back", "three_quarter", "full_body")
 
@@ -56,6 +61,7 @@ class DesignRequest(BaseModel):
     hair: str = ""
     outfit: str = ""
     extra: str = ""
+    kling_voice_id: str = ""
 
 
 class DesignResponse(BaseModel):
@@ -72,6 +78,8 @@ class DesignResponse(BaseModel):
     outfit: str
     extra: str
     locked_prompt: str
+    kling_voice_id: str = ""
+    kling_element_id: str = ""
 
 
 class RefImageResponse(BaseModel):
@@ -87,7 +95,7 @@ class RefImageResponse(BaseModel):
 
 
 class GenerateRefRequest(BaseModel):
-    """生成参考图。views 为空则生成全部四视角。"""
+    """生成参考图。views 为空则生成全部五视角。"""
     views: list[str] = []
 
 
@@ -103,6 +111,8 @@ def _design_to_resp(d: CharacterDesign) -> DesignResponse:
         gender=d.gender, age=d.age, body_type=d.body_type, color_tone=d.color_tone,
         art_style=d.art_style, facial_features=d.facial_features,
         hair=d.hair, outfit=d.outfit, extra=d.extra, locked_prompt=d.locked_prompt,
+        kling_voice_id=d.kling_voice_id or "",
+        kling_element_id=d.kling_element_id or "",
     )
 
 
@@ -114,6 +124,85 @@ def _ref_to_resp(r: CharacterRefImage) -> RefImageResponse:
         width=r.width, height=r.height,
         image_url=f"/api/character-refs/{r.id}/image",
     )
+
+
+def _kling_ref_negative(view: str) -> str:
+    """可灵参考图负向词：视角专属压制 + 禁止画面文字。"""
+    opts = image_client.ref_view_gen_opts(view)
+    return f"{opts['negative_prompt']}，{kling_client.KLING_AVOID_TEXT_NEGATIVE}"
+
+
+def _append_no_text_positive(prompt: str) -> str:
+    return f"{prompt}，{kling_client.KLING_AVOID_TEXT_POSITIVE}"
+
+
+def _ref_by_view(refs: list[CharacterRefImage], view: str) -> Optional[CharacterRefImage]:
+    return next((r for r in refs if r.view == view), None)
+
+
+def _ref_path_for_view(refs: list[CharacterRefImage], view: str) -> Optional[Path]:
+    ref = _ref_by_view(refs, view)
+    if not ref or not ref.image_path:
+        return None
+    p = VIDEOS_DIR / ref.image_path
+    return p if p.exists() else None
+
+
+def _collect_element_submit_images(
+    refs: list[CharacterRefImage],
+) -> tuple[Path, list[Path], list[str]]:
+    """按优先级从五视角中选取最多 3 张提交可灵。
+
+    优先级：正视图 → 侧视图 → 背视图 → 脸部特写 → 全身立绘。
+    第 1 张作 frontal_image，其余作 refer_images（refer 最多 2 张，合计不超过 3 张）。
+    若侧/背缺失，依次用脸部特写、全身替补。
+    """
+    selected_views: list[str] = []
+    for view in ELEMENT_SUBMIT_PRIORITY:
+        if len(selected_views) >= MAX_ELEMENT_SUBMIT_IMAGES:
+            break
+        if _ref_path_for_view(refs, view):
+            selected_views.append(view)
+
+    if not selected_views or selected_views[0] != "front":
+        raise HTTPException(400, "正视图参考图不存在，请重新生成")
+
+    frontal = _ref_path_for_view(refs, "front")
+    assert frontal is not None
+
+    refer_paths: list[Path] = []
+    for view in selected_views[1:]:
+        p = _ref_path_for_view(refs, view)
+        if p:
+            refer_paths.append(p)
+
+    if not refer_paths:
+        raise HTTPException(400, "除正视图外至少需要一张参考图（侧视/背视优先）")
+
+    return frontal, refer_paths, selected_views
+
+
+def _ensure_front_primary(session: Session, character_id: int) -> None:
+    """正视图存在时设为首帧基准（用于镜头出片复用）。"""
+    front = session.exec(
+        select(CharacterRefImage)
+        .where(CharacterRefImage.character_id == character_id)
+        .where(CharacterRefImage.view == "front")
+    ).first()
+    if not front:
+        return
+    others = session.exec(
+        select(CharacterRefImage)
+        .where(CharacterRefImage.character_id == character_id)
+        .where(CharacterRefImage.is_primary == True)  # noqa: E712
+    ).all()
+    for r in others:
+        if r.id != front.id:
+            r.is_primary = False
+            session.add(r)
+    if not front.is_primary:
+        front.is_primary = True
+        session.add(front)
 
 
 def _get_character(session: Session, project_id: int, character_id: int) -> Character:
@@ -159,6 +248,7 @@ def save_design(project_id: int, character_id: int, req: DesignRequest,
         d.hair = req.hair
         d.outfit = req.outfit
         d.extra = req.extra
+        d.kling_voice_id = req.kling_voice_id.strip()
         d.locked_prompt = locked
         d.updated_at = datetime.utcnow()
     else:
@@ -167,7 +257,9 @@ def save_design(project_id: int, character_id: int, req: DesignRequest,
             gender=req.gender, age=req.age, body_type=req.body_type,
             color_tone=req.color_tone,
             art_style=req.art_style, facial_features=req.facial_features,
-            hair=req.hair, outfit=req.outfit, extra=req.extra, locked_prompt=locked,
+            hair=req.hair, outfit=req.outfit, extra=req.extra,
+            kling_voice_id=req.kling_voice_id.strip(),
+            locked_prompt=locked,
         )
         session.add(d)
     session.commit()
@@ -235,6 +327,84 @@ async def scan_characters_from_outline(project_id: int,
     )
 
 
+class CreateElementRequest(BaseModel):
+    voice_id: str = ""
+
+
+@router.post("/projects/{project_id}/characters/{character_id}/element")
+async def create_character_element(
+    project_id: int,
+    character_id: int,
+    req: CreateElementRequest,
+    session: Session = Depends(get_session),
+) -> DesignResponse:
+    """用五视角参考图（脸部特写/正/侧/背/全身）+ 音色 ID 调用可灵 API 合成主体 ID。"""
+    if not settings.kling_configured:
+        raise HTTPException(400, "未配置可灵 AccessKey / SecretKey")
+
+    character = _get_character(session, project_id, character_id)
+    design = session.exec(
+        select(CharacterDesign).where(CharacterDesign.character_id == character_id)
+    ).first()
+    if not design or not design.locked_prompt:
+        raise HTTPException(400, "请先保存该角色的锁定设定")
+
+    voice_id = (req.voice_id or design.kling_voice_id or "").strip()
+    if not voice_id:
+        raise HTTPException(400, "请填写音色 ID")
+
+    refs = session.exec(
+        select(CharacterRefImage)
+        .where(CharacterRefImage.character_id == character_id)
+        .order_by(CharacterRefImage.created_at)
+    ).all()
+    missing_views = [
+        v for v in REQUIRED_ELEMENT_VIEWS if not _ref_by_view(refs, v)
+    ]
+    if missing_views:
+        labels = [image_client.REF_VIEW_LABELS.get(v, v) for v in missing_views]
+        raise HTTPException(
+            400,
+            f"合成主体需要完整五视角参考图，缺少：{'、'.join(labels)}。请先一键生成全套。",
+        )
+
+    frontal_path, refer_paths, selected_views = _collect_element_submit_images(refs)
+    selected_labels = [
+        image_client.REF_VIEW_LABELS.get(v, v) for v in selected_views
+    ]
+    logger.info(
+        f"[CharRef] 主体合成选图：character_id={character_id}, "
+        f"frontal=正视图, refer={len(refer_paths)} 张 "
+        f"（{'、'.join(selected_labels)}）"
+    )
+
+    desc = design.locked_prompt or character.description or character.name
+    try:
+        result = await kling_client.create_and_poll_custom_element(
+            element_name=character.name,
+            element_description=desc,
+            frontal_image_path=frontal_path,
+            refer_image_paths=refer_paths,
+            voice_id=voice_id,
+            tag_list=kling_client.character_element_tags(),
+        )
+    except kling_client.KlingError as e:
+        raise HTTPException(502, str(e)) from e
+
+    from datetime import datetime
+    design.kling_voice_id = voice_id
+    design.kling_element_id = result["element_id"]
+    design.updated_at = datetime.utcnow()
+    session.add(design)
+    session.commit()
+    session.refresh(design)
+    logger.info(
+        f"[CharRef] 主体合成成功：character_id={character_id}, "
+        f"element_id={design.kling_element_id}"
+    )
+    return _design_to_resp(design)
+
+
 # --------------------------- 参考图 ---------------------------
 @router.get("/projects/{project_id}/characters/{character_id}/ref-images")
 def list_ref_images(project_id: int, character_id: int,
@@ -253,11 +423,14 @@ def list_ref_images(project_id: int, character_id: int,
 async def generate_ref_images(project_id: int, character_id: int,
                               req: GenerateRefRequest,
                               session: Session = Depends(get_session)) -> GenerateRefResult:
-    """生成角色参考图。必须先保存锁定设定。
+    """可灵文生图生成角色参考图。必须先保存锁定设定。
 
-    views 为空时生成全部四视角；同一视角重复生成会替换旧图。
-    第一张生成的图若该角色还没有首帧基准，自动设为 is_primary。
+    views 为空时生成全部五视角；同一视角重复生成会替换旧图。
+    正视图生成后自动设为首帧基准。
     """
+    if not settings.kling_configured:
+        raise HTTPException(400, "未配置可灵 AccessKey / SecretKey")
+
     character = _get_character(session, project_id, character_id)
     design = session.exec(
         select(CharacterDesign).where(CharacterDesign.character_id == character_id)
@@ -269,12 +442,6 @@ async def generate_ref_images(project_id: int, character_id: int,
     bad = [v for v in views if v not in VALID_VIEWS]
     if bad:
         raise HTTPException(400, f"不支持的视角：{bad}")
-
-    has_primary = session.exec(
-        select(CharacterRefImage)
-        .where(CharacterRefImage.character_id == character_id)
-        .where(CharacterRefImage.is_primary == True)  # noqa: E712
-    ).first() is not None
 
     results: list[CharacterRefImage] = []
     skipped: list[dict] = []
@@ -288,33 +455,28 @@ async def generate_ref_images(project_id: int, character_id: int,
             )
         else:
             prompt = image_client.build_ref_image_prompt(design.locked_prompt, view)
+        prompt = _append_no_text_positive(prompt)
         filename = f"ref_{character_id}_{view}_{uuid.uuid4().hex[:10]}.png"
         file_path = VIDEOS_DIR / filename
         label = image_client.REF_VIEW_LABELS.get(view, view)
-        # 各视角专属画布比例：特写用正方形、全身类用竖图（比提示词更硬的构图约束）
         w, h = image_client.ref_view_size(view, settings.image_width)
-        # 各视角附加参数：特写关掉智能扩写（防被扩成全身）+ 负向词压制阴影/下半身
-        opts = image_client.ref_view_gen_opts(view)
-        logger.info(f"[CharRef] 生成参考图：{character.name} / {view} ({w}x{h}) "
-                    f"extend={opts['prompt_extend']}")
+        aspect_ratio = image_client.ref_view_aspect_ratio(view)
+        negative_prompt = _kling_ref_negative(view)
+        logger.info(
+            f"[CharRef] 可灵文生参考图：{character.name} / {view} "
+            f"({aspect_ratio}, 记录尺寸 {w}x{h})"
+        )
         try:
-            result = await image_client.generate_image(
-                prompt=prompt, style=settings.image_style,
-                width=w, height=h,
+            await kling_client.generate_image(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                aspect_ratio=aspect_ratio,
                 save_path=file_path,
-                negative_prompt=opts["negative_prompt"],
-                prompt_extend=opts["prompt_extend"],
             )
         except Exception as e:
-            # 某视角失败（如通义内容审核 DataInspectionFailed）不应让整批崩溃，
-            # 跳过该视角、记录原因，其余视角照常生成。
             logger.error(f"[CharRef] 参考图生成失败({view}): {e}", exc_info=True)
             _safe_unlink(file_path)
-            msg = str(e)
-            if "DataInspectionFailed" in msg or "inappropriate" in msg:
-                reason = "被通义内容审核拦截（换描述或重试）"
-            else:
-                reason = msg[:120]
+            reason = str(e)[:120]
             skipped.append({"view": view, "view_label": label, "reason": reason})
             continue
 
@@ -331,15 +493,17 @@ async def generate_ref_images(project_id: int, character_id: int,
         ref = CharacterRefImage(
             project_id=project_id, character_id=character_id, view=view,
             prompt=prompt, image_path=filename,
-            is_primary=(not has_primary),  # 第一张自动设为首帧基准
-            width=result["width"], height=result["height"],
+            is_primary=False,
+            width=w, height=h,
         )
-        if not has_primary:
-            has_primary = True
         session.add(ref)
         session.commit()
         session.refresh(ref)
         results.append(ref)
+
+    if results:
+        _ensure_front_primary(session, character_id)
+        session.commit()
 
     # 全部视角都失败才报错；否则返回成功的 + 跳过的
     if not results and skipped:

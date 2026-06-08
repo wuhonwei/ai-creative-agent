@@ -28,8 +28,6 @@ class Settings(BaseSettings):
     tongyi_api_key: str = ""
     tongyi_base_url: str = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
     tongyi_model: str = "wanx-v1"  # 通义万相最强模型
-    # 图像编辑模型：保持参考图主体一致、按文字重绘场景（镜头首帧锁角色形象用）
-    image_edit_model: str = "qwen-image-edit"
 
     database_url: str = "sqlite:///./creative_agent.db"
 
@@ -51,8 +49,10 @@ class Settings(BaseSettings):
     kling_access_key: str = ""
     kling_secret_key: str = ""
     kling_base_url: str = "https://api-beijing.klingai.com"  # 国内站
-    kling_model: str = "kling-v2-6"     # 模型名称（v2-6 支持 element_id）
-    video_duration: int = 5             # 单镜头时长（秒），可灵支持 5 / 10
+    kling_model: str = "kling-v2-6"     # 图生视频模型（v2-6 支持 element_id）
+    kling_image_model: str = "kling-v2-1"  # 图像生成模型（首帧图）
+    kling_image_aspect_ratio: str = "16:9"  # 可灵生图画面比例
+    video_duration: int = 5             # 单镜头默认时长（秒），可灵支持 5~15
     video_mode: str = "pro"             # std（标准）| pro（高表现）
     video_sound: str = "on"             # 音效：on | off
 
@@ -73,3 +73,23 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+KLING_VIDEO_DURATION_MIN = 5
+KLING_VIDEO_DURATION_MAX = 15
+
+
+def resolve_video_duration(shot_duration: float | int | str | None = None) -> int:
+    """解析可灵图生视频时长。合法范围为 5~15 秒（整数）。
+
+    镜头时长在范围内时用镜头值，否则回退到 VIDEO_DURATION 配置。
+    """
+    try:
+        d = int(round(float(shot_duration))) if shot_duration is not None else -1
+    except (TypeError, ValueError):
+        d = -1
+    if KLING_VIDEO_DURATION_MIN <= d <= KLING_VIDEO_DURATION_MAX:
+        return d
+    fb = int(settings.video_duration)
+    if KLING_VIDEO_DURATION_MIN <= fb <= KLING_VIDEO_DURATION_MAX:
+        return fb
+    return KLING_VIDEO_DURATION_MIN

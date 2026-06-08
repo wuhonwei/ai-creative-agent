@@ -7,8 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.db import init_db
 from app.routers import (
-    assets, chapters, character_refs, export, generate, outline, projects,
-    scenes, storyboard, videos,
+    assets, chapters, character_refs, custom_voices, export, generate, outline,
+    projects, scenes, storyboard, videos,
 )
 
 
@@ -38,6 +38,7 @@ app.include_router(scenes.router)
 app.include_router(character_refs.router)
 app.include_router(storyboard.router)
 app.include_router(videos.router)
+app.include_router(custom_voices.router)
 
 
 @app.get("/api/health")

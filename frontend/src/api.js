@@ -63,10 +63,14 @@ export const api = {
   planChapterScenes: (chapterId) =>
     req(`/chapters/${chapterId}/scenes/plan`, { method: 'POST' }),
   getChapterScenes: (chapterId) => req(`/chapters/${chapterId}/scenes`),
-  generateSceneImage: (sceneId) => req(`/scenes/${sceneId}/image`, { method: 'POST' }),
+  generateSceneImage: (sceneId) => req(`/scenes/${sceneId}/images`, { method: 'POST' }),
+  listSceneImages: (sceneId) => req(`/scenes/${sceneId}/images`),
+  deleteSceneImage: (imageId) => req(`/scene-images/${imageId}`, { method: 'DELETE' }),
+  createSceneElement: (sceneId) => req(`/scenes/${sceneId}/element`, { method: 'POST' }),
   generateAllSceneImages: (pid) =>
     req(`/projects/${pid}/scenes/generate-images`, { method: 'POST' }),
   sceneImageUrl: (sceneId) => `/api/scenes/${sceneId}/image`,
+  sceneRefImageUrl: (imageId) => `/api/scene-images/${imageId}/file`,
 
   // Assets (图片资产)
   listAssets: (pid, assetType = null) => {
@@ -104,6 +108,8 @@ export const api = {
   getDesign: (pid, cid) => req(`/projects/${pid}/characters/${cid}/design`),
   saveDesign: (pid, cid, body) =>
     req(`/projects/${pid}/characters/${cid}/design`, { method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify(body) }),
+  createCharacterElement: (pid, cid, body) =>
+    req(`/projects/${pid}/characters/${cid}/element`, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) }),
   autofillDesigns: (pid, onlyEmpty = false) =>
     req(`/projects/${pid}/characters/designs/autofill`, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ only_empty: onlyEmpty }) }),
   scanCharactersFromOutline: (pid) =>
@@ -124,9 +130,11 @@ export const api = {
     req(`/shots/${shotId}`, { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(body) }),
   deleteShot: (shotId) => req(`/shots/${shotId}`, { method: 'DELETE' }),
   deleteStoryboard: (chapterId) => req(`/chapters/${chapterId}/storyboard`, { method: 'DELETE' }),
-  // 镜头图生视频
+  // 镜头图生视频（首尾帧从成片自动提取）
   generateShotVideo: (shotId) => req(`/shots/${shotId}/video`, { method: 'POST' }),
   getShotVideo: (shotId) => req(`/shots/${shotId}/video`),
+  videoPosterUrl: (videoId) => `/api/videos/${videoId}/poster`,
+  videoLastFrameUrl: (videoId) => `/api/videos/${videoId}/last-frame`,
   generateChapterShotVideos: (chapterId) =>
     req(`/chapters/${chapterId}/shots/generate-videos`, { method: 'POST' }),
   videoFileUrl: (videoId) => `/api/videos/${videoId}/file`,
@@ -134,6 +142,16 @@ export const api = {
   // 章节合成
   composeChapter: (chapterId) => req(`/chapters/${chapterId}/compose`, { method: 'POST' }),
   getChapterVideo: (chapterId) => req(`/chapters/${chapterId}/compose`),
+
+  // 定制音色
+  listPresetVoices: (pageNum = 1, pageSize = 30) =>
+    req(`/preset-voices?page_num=${pageNum}&page_size=${pageSize}`),
+  listVoices: (pid) => req(`/projects/${pid}/voices`),
+  createVoice: (pid, body) =>
+    req(`/projects/${pid}/voices`, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) }),
+  getVoice: (id) => req(`/voices/${id}`),
+  retryVoice: (id) => req(`/voices/${id}/retry`, { method: 'POST' }),
+  deleteVoice: (id) => req(`/voices/${id}`, { method: 'DELETE' }),
 }
 
 // 流式生成正文。回调：onDelta(text)、onDone({chapter_id, word_count})、onError(msg)、onWordCount({word_count, message})。

@@ -32,6 +32,8 @@ _COLUMN_MIGRATIONS = {
         "age": "TEXT NOT NULL DEFAULT ''",
         "body_type": "TEXT NOT NULL DEFAULT ''",
         "color_tone": "TEXT NOT NULL DEFAULT ''",
+        "kling_voice_id": "TEXT NOT NULL DEFAULT ''",
+        "kling_element_id": "TEXT NOT NULL DEFAULT ''",
     },
     "scene": {
         "style": "TEXT NOT NULL DEFAULT ''",
