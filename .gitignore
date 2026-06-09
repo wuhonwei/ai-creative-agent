@@ -6,6 +6,10 @@ __pycache__/
 # 数据库（本地数据，勿提交）
 backend/*.db
 
+# 本地生成资源（勿提交）
+backend/assets/
+backend/videos/
+
 # 环境变量（含密钥）
 backend/.env
 
