@@ -4,6 +4,10 @@
 分四类任务：生成大纲 / 生成正文 / 抽取摘要 / 抽取状态变化。
 """
 import json
+import re
+from pathlib import Path
+
+from app.config import settings
 
 # ---------------------------------------------------------------------------
 # 系统人设
@@ -14,6 +18,47 @@ SYSTEM_WRITER = (
     "不擅自推翻既有设定，不出现与历史情节矛盾的内容。"
     "文笔细腻、叙事流畅，对话自然，节奏张弛有度。"
 )
+
+# 方案2：生成时预防 AI 写作痕迹（精简版，完整规则留给生成后 humanize）
+HUMANIZER_PREVENTION_RULES = """
+7. **去 AI 味（写作时即遵守）**：
+   - 不用「标志着」「至关重要」「展现出」「凸显了」等升华套话；不堆砌象征意义。
+   - 少用「不仅……更……」「既……又……」式排比，以及三连形容词（「精准、高效、创新」）。
+   - 避免「——」破折号后接「确保/象征/反映……」的浅层分析句。
+   - 对话要口语化、有角色个性，不要人人像播音稿；叙述句式长短交替，忌句句同构。
+   - 不用「业内人士指出」「专家认为」等模糊归因；心理活动写具体，不写空泛感慨。
+   - 禁用 AI 高频词：此外、然而、综上所述、值得注意的是、毋庸置疑、无缝、赋能等。
+   - 结尾留悬念即可，不要「未来可期」「意义重大」式空洞收束。"""
+
+_HUMANIZER_SKILL_FALLBACK = """\
+识别并改写 AI 写作痕迹： inflated symbolism、promotional language、superficial -ing analyses、
+vague attributions、em dash overuse、rule of three、AI vocabulary、negative parallelisms。
+保留剧情与人设，让文字读起来像资深作者手写。"""
+
+
+def _humanizer_skill_path() -> Path:
+    return Path(__file__).resolve().parents[3] / ".cursor" / "skills" / "humanizer" / "SKILL.md"
+
+
+def load_humanizer_skill_content() -> str:
+    """读取项目内 humanizer 技能全文；缺失时用内置摘要。"""
+    skill_path = _humanizer_skill_path()
+    if not skill_path.exists():
+        return _HUMANIZER_SKILL_FALLBACK
+    text = skill_path.read_text(encoding="utf-8")
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) >= 3:
+            text = parts[2].strip()
+    return text
+
+
+def _strip_model_fences(text: str) -> str:
+    t = text.strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```[\w]*\n?", "", t)
+        t = re.sub(r"\n?```$", "", t)
+    return t.strip()
 
 
 def _bible_block(project: dict, characters: list[dict]) -> str:
@@ -215,6 +260,8 @@ def build_chapter_prompt(project: dict, characters: list[dict],
         f"未完成的对话、突然出现的线索等方式，让读者产生\"接下来会怎样？\"的期待感，吸引继续阅读下一章。\n"
         f"6. 只输出正文本身，不要输出标题、解释、大纲或额外说明。"
     )
+    if settings.enable_humanizer_prevention:
+        parts.append(HUMANIZER_PREVENTION_RULES)
 
     return [
         {"role": "system", "content": SYSTEM_WRITER},
@@ -320,6 +367,52 @@ def build_review_prompt(project: dict, chapter_title: str, chapter_content: str,
         {"role": "system", "content": "你是严谨的小说审稿编辑，只输出 JSON。"},
         {"role": "user", "content": user},
     ]
+
+
+# ---------------------------------------------------------------------------
+# 5b. 生成后 humanize 润色（方案3）
+# ---------------------------------------------------------------------------
+def build_humanizer_prompt(project: dict, chapter_title: str,
+                           chapter_content: str,
+                           word_min: int = 1700, word_max: int = 3000) -> list[dict]:
+    """对已定稿章节做去 AI 味润色，规则来自 .cursor/skills/humanizer/SKILL.md。"""
+    skill_guide = load_humanizer_skill_content()
+    style_hint = ""
+    if project.get("style"):
+        style_hint += f"文风：{project['style']}。"
+    if project.get("mood"):
+        style_hint += f"氛围：{project['mood']}。"
+
+    system = (
+        "你是一位资深中文小说编辑，专门去除 AI 生成文本的痕迹，让文字读起来像人类作者手写。"
+        "你必须严格遵守 humanizer 技能指南中的模式识别与改写规则。"
+        "润色时不得改变剧情走向、人物关系、关键事件与伏笔；只改表达方式。"
+        "仅输出润色后的正文，不要输出标题、解释、变更摘要或 Markdown 围栏。"
+    )
+    user = f"""【humanizer 技能指南】
+{skill_guide}
+
+【作品风格参考】
+{style_hint or '（按原文风格保持即可）'}
+
+【本章标题】{chapter_title}
+
+【待润色正文】
+{chapter_content}
+
+请 humanize 以上正文：
+1. 识别并改写 AI 写作模式（套话、排比、破折号分析句、模糊归因、AI 高频词等）。
+2. 保持剧情、人物、时间线、伏笔完全不变；对话可更口语化但须符合角色性格。
+3. 字数控制在 {word_min}-{word_max} 字之间（含标点），尽量接近原文长度。
+4. 只输出润色后的正文本身。"""
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
+def strip_humanizer_output(raw: str) -> str:
+    return _strip_model_fences(raw)
 
 
 # ---------------------------------------------------------------------------

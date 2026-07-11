@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     # 每章目标字数（引导模型，软约束）
     chapter_target_words: int = 2000
 
+    # humanizer：生成时预防 AI 味（方案2）+ 生成后润色（方案3）
+    enable_humanizer_prevention: bool = True
+    enable_humanizer_post: bool = True
+
     # 喂给模型的"最近全文章节"字符预算，其余历史靠压缩摘要
     recent_chapters_char_budget: int = 12000
 

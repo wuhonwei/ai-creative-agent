@@ -5,6 +5,8 @@
 
 SSE 事件：
   event: delta  data: {"text": "..."}      —— 增量正文
+  event: humanize  data: {"message": "..."}  —— 开始去 AI 味润色
+  event: humanize_done  data: {...}       —— 润色完成
   event: done   data: {"chapter_id": 12, "word_count": 2103}
   event: error  data: {"message": "..."}
 """
@@ -19,15 +21,49 @@ from app.db import engine, get_session
 from app.llm import client, prompts
 from app.models import Chapter, OutlineNode, Project
 from app.schemas import ChapterGenerateRequest
-from app.services import context_builder
+from app.services import context_builder, generation
 from sqlmodel import Session as SQLSession
 
 router = APIRouter(prefix="/api", tags=["generate"])
 logger = logging.getLogger(__name__)
 
+WORD_COUNT_MIN = 1700
+WORD_COUNT_MAX = 3000
+
 
 def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _word_count_ok(count: int) -> bool:
+    return WORD_COUNT_MIN <= count <= WORD_COUNT_MAX
+
+
+async def _humanize_chapter_text(project_dict: dict, title: str, text: str) -> tuple[str, dict]:
+    """方案3：生成后 humanize。返回 (正文, 元信息)。"""
+    original_len = len(text)
+    word_min = max(WORD_COUNT_MIN, int(original_len * 0.9))
+    word_max = min(WORD_COUNT_MAX, int(original_len * 1.1))
+    if word_min > word_max:
+        word_min, word_max = WORD_COUNT_MIN, WORD_COUNT_MAX
+
+    msgs = prompts.build_humanizer_prompt(
+        project_dict, title, text, word_min=word_min, word_max=word_max,
+    )
+    raw = await client.chat(msgs, temperature=0.5, max_tokens=client.settings.llm_max_tokens)
+    humanized = prompts.strip_humanizer_output(raw)
+    if not humanized:
+        return text, {"skipped": True, "reason": "模型未返回润色内容"}
+
+    hc = len(humanized)
+    if _word_count_ok(hc):
+        return humanized, {"skipped": False, "word_count": hc}
+
+    # 略宽容忍：与原文相差 ≤15% 且落在 1600-3200
+    if humanized and 1600 <= hc <= 3200 and abs(hc - original_len) / max(original_len, 1) <= 0.15:
+        return humanized, {"skipped": False, "word_count": hc, "soft_accept": True}
+
+    return text, {"skipped": True, "reason": f"润色后字数 {hc} 偏差过大，保留原稿", "word_count": hc}
 
 
 @router.post("/projects/{project_id}/generate")
@@ -107,8 +143,8 @@ async def generate_chapter(project_id: int, body: ChapterGenerateRequest,
             yield _sse("review", {"message": "正在审查章节质量（字数、逻辑、衔接）..."})
 
             # 1. 字数检查（硬性要求：1700-3000）
-            if word_count < 1700 or word_count > 3000:
-                issues = f"字数不符合要求：当前 {word_count} 字，要求 1700-3000 字。"
+            if not _word_count_ok(word_count):
+                issues = f"字数不符合要求：当前 {word_count} 字，要求 {WORD_COUNT_MIN}-{WORD_COUNT_MAX} 字。"
                 logger.warning(f"字数审查未通过（第 {retry_count + 1} 次）：{issues}")
 
                 if retry_count < MAX_RETRIES:
@@ -187,6 +223,32 @@ async def generate_chapter(project_id: int, body: ChapterGenerateRequest,
                 logger.error(f"审查过程出错：{e}，跳过审查直接使用生成内容")
                 yield _sse("review", {"message": f"审查过程出错，跳过审查", "pass": None})
                 break
+
+        # 方案3：审查通过后，生成后 humanize 润色
+        if client.settings.enable_humanizer_post and full_text:
+            yield _sse("humanize", {"message": "正在去 AI 味润色..."})
+            try:
+                project_dict = context_builder.project_to_dict(project)
+                full_text, meta = await _humanize_chapter_text(
+                    project_dict, node.title, full_text,
+                )
+                if meta.get("skipped"):
+                    msg = meta.get("reason", "已跳过润色")
+                    logger.warning(f"humanize 跳过：{msg}")
+                    yield _sse("humanize_done", {"message": msg, "skipped": True})
+                else:
+                    wc = meta.get("word_count", len(full_text))
+                    note = "（字数略偏离标准区间）" if meta.get("soft_accept") else ""
+                    logger.info(f"humanize 完成，字数：{wc}{note}")
+                    yield _sse("humanize_done", {
+                        "message": f"润色完成，本章 {wc} 字{note}",
+                        "word_count": wc,
+                        "skipped": False,
+                    })
+                    yield _sse("replace", {"text": full_text})
+            except Exception as e:
+                logger.error(f"humanize 失败：{e}，保留原稿")
+                yield _sse("humanize_done", {"message": f"润色失败，已保留原稿：{e}", "skipped": True})
 
         # 写库为 draft（新建或覆盖该节点已有的草稿）
         with SQLSession(engine) as s:

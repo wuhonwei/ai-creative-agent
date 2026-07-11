@@ -85,6 +85,10 @@ export default function ChapterWorkspace({ project, notify }) {
       { outline_node_id: activeNode.id, action, instruction },
       {
         onDelta: (t) => setStreamText((s) => s + t),
+        onReplace: (t) => setStreamText(t),
+        onStatus: ({ event, message }) => {
+          if (message) notify(message, event === 'retry')
+        },
         onWordCount: (data) => {
           notify(data.message || `本章字数：${data.word_count} 字`)
         },
@@ -255,6 +259,10 @@ export default function ChapterWorkspace({ project, notify }) {
       { outline_node_id: node.id, action: 'new', instruction: '' },
       {
         onDelta: (t) => setStreamText((s) => s + t),
+        onReplace: (t) => setStreamText(t),
+        onStatus: ({ event, message }) => {
+          if (message) notify(message, event === 'retry')
+        },
         onWordCount: (data) => {
           notify(data.message || `本章字数：${data.word_count} 字`)
         },
@@ -320,6 +328,28 @@ export default function ChapterWorkspace({ project, notify }) {
     notify('已停止自动生成')
   }
 
+  async function copyText(text, label) {
+    if (!text) {
+      notify(`没有可复制的${label}`, true)
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(text)
+      notify(`已复制${label}`)
+    } catch (e) {
+      notify(`复制失败：${e.message}`, true)
+    }
+  }
+
+  function copyTitle() {
+    copyText(activeNode?.title, '标题')
+  }
+
+  function copyContent() {
+    const text = editing ? editText : (streaming ? streamText : (chapter?.content || ''))
+    copyText(text, '正文')
+  }
+
   return <Body
     project={project} nodes={nodes} chapters={chapters} activeNode={activeNode}
     chapter={chapter} streaming={streaming} streamText={streamText}
@@ -331,6 +361,7 @@ export default function ChapterWorkspace({ project, notify }) {
     onCancelEdit={() => setEditing(false)} setEditText={setEditText}
     onReset={resetChapter}
     onStartAuto={startAutoGenerate} onStopAuto={stopAutoGenerate}
+    onCopyTitle={copyTitle} onCopyContent={copyContent}
   />
 }
 
@@ -345,6 +376,7 @@ function Body(props) {
     editing, editText, chars, threads, stats, autoMode, proseRef,
     onSelectNode, onGenerate, onStop, onConfirm, onStartEdit, onSaveEdit,
     onCancelEdit, setEditText, onReset, onStartAuto, onStopAuto,
+    onCopyTitle, onCopyContent,
   } = props
 
   const hasOutline = nodes.some((g) => g.chapters.length > 0)
@@ -410,6 +442,8 @@ function Body(props) {
                     </span>
                   )}
                   <div className="spacer" />
+                  <button className="small" onClick={onCopyTitle}>复制标题</button>
+                  <button className="small" onClick={onCopyContent}>复制正文</button>
                   {streaming ? (
                     <button className="danger" onClick={onStop}>⏹ 停止</button>
                   ) : !chapter || !chapter.content ? (

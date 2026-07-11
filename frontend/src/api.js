@@ -154,9 +154,10 @@ export const api = {
   deleteVoice: (id) => req(`/voices/${id}`, { method: 'DELETE' }),
 }
 
-// 流式生成正文。回调：onDelta(text)、onDone({chapter_id, word_count})、onError(msg)、onWordCount({word_count, message})。
+// 流式生成正文。回调：onDelta(text)、onDone({chapter_id, word_count})、onError(msg)、
+// onWordCount({word_count, message})、onStatus({event, ...data})、onReplace(text)。
 // 返回一个 abort 函数。
-export function generateChapterStream(projectId, body, { onDelta, onDone, onError, onWordCount }) {
+export function generateChapterStream(projectId, body, { onDelta, onDone, onError, onWordCount, onStatus, onReplace }) {
   const controller = new AbortController()
   console.log(`[SSE] 开始流式生成：project_id=${projectId}, body=`, body)
 
@@ -191,7 +192,7 @@ export function generateChapterStream(projectId, body, { onDelta, onDone, onErro
         while ((idx = buffer.indexOf('\n\n')) !== -1) {
           const rawEvent = buffer.slice(0, idx)
           buffer = buffer.slice(idx + 2)
-          parseEvent(rawEvent, { onDelta, onDone, onError }, (chars) => { totalChars += chars })
+          parseEvent(rawEvent, { onDelta, onDone, onError, onWordCount, onStatus, onReplace }, (chars) => { totalChars += chars })
         }
       }
       console.log(`[SSE] 流式生成完成，总计 ${totalChars} 字符`)
@@ -208,7 +209,7 @@ export function generateChapterStream(projectId, body, { onDelta, onDone, onErro
   return () => controller.abort()
 }
 
-function parseEvent(raw, { onDelta, onDone, onError, onWordCount }, onCharCount) {
+function parseEvent(raw, { onDelta, onDone, onError, onWordCount, onStatus, onReplace }, onCharCount) {
   let event = 'message'
   let dataStr = ''
   for (const line of raw.split('\n')) {
@@ -223,6 +224,8 @@ function parseEvent(raw, { onDelta, onDone, onError, onWordCount }, onCharCount)
     const text = data.text || ''
     onCharCount?.(text.length)
     onDelta?.(text)
+  } else if (event === 'replace') {
+    onReplace?.(data.text || '')
   } else if (event === 'word_count') {
     console.log(`[SSE] word_count 事件:`, data)
     onWordCount?.(data)
@@ -232,6 +235,8 @@ function parseEvent(raw, { onDelta, onDone, onError, onWordCount }, onCharCount)
   } else if (event === 'error') {
     console.error(`[SSE] error 事件:`, data.message)
     onError?.(data.message || '生成出错')
+  } else if (['review', 'retry', 'humanize', 'humanize_done'].includes(event)) {
+    onStatus?.({ event, ...data })
   }
 }
 
