@@ -235,7 +235,7 @@ function parseEvent(raw, { onDelta, onDone, onError, onWordCount, onStatus, onRe
   } else if (event === 'error') {
     console.error(`[SSE] error 事件:`, data.message)
     onError?.(data.message || '生成出错')
-  } else if (['review', 'retry', 'humanize', 'humanize_done'].includes(event)) {
+  } else if (['review', 'retry', 'humanize', 'humanize_done', 'parallel', 'candidate', 'select'].includes(event)) {
     onStatus?.({ event, ...data })
   }
 }

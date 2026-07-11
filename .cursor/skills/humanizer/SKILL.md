@@ -185,6 +185,8 @@ Avoiding AI patterns is only half the job. Sterile, voiceless writing is just as
 
 ### 9. Negative Parallelisms
 
+**Also see:** project skill `concise-fiction` for Chinese fiction patterns like「是 X，不是 Y」.
+
 **Problem:** Constructions like "Not only...but..." or "It's not just about..., it's..." are overused.
 
 **Before:**

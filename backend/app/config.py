@@ -34,8 +34,14 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.85
     llm_max_tokens: int = 16384
 
-    # 每章目标字数（引导模型，软约束）
+    # 每章目标字数（引导模型，软约束，不设上限）
     chapter_target_words: int = 2000
+
+    # 每章最少字数（硬性下限，审查与润色校验用）
+    chapter_word_count_min: int = 1000
+
+    # 每章并行生成候选数（多路生成 → humanize → 评分择优）
+    chapter_parallel_candidates: int = 3
 
     # humanizer：生成时预防 AI 味（方案2）+ 生成后润色（方案3）
     enable_humanizer_prevention: bool = True

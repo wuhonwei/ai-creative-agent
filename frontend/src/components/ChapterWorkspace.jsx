@@ -78,7 +78,7 @@ export default function ChapterWorkspace({ project, notify }) {
   function runGenerate(action = 'new', instruction = '') {
     if (!activeNode) return
     setStreaming(true)
-    setStreamText('')
+    setStreamText('正在启动并行生成，请稍候…')
     setEditing(false)
     abortRef.current = generateChapterStream(
       project.id,
@@ -87,19 +87,23 @@ export default function ChapterWorkspace({ project, notify }) {
         onDelta: (t) => setStreamText((s) => s + t),
         onReplace: (t) => setStreamText(t),
         onStatus: ({ event, message }) => {
-          if (message) notify(message, event === 'retry')
+          if (message) {
+            setStreamText(message)
+            notify(message, event === 'retry')
+          }
         },
         onWordCount: (data) => {
           notify(data.message || `本章字数：${data.word_count} 字`)
         },
-        onDone: async ({ chapter_id, word_count }) => {
+        onDone: async ({ chapter_id, word_count, score, winner, rationale }) => {
           setStreaming(false)
           try {
             const ch = await api.getChapter(chapter_id)
             setChapter(ch)
             setStreamText('')
             await loadStructure()
-            notify(`生成完成！本章 ${word_count} 字`)
+            const scoreHint = score != null ? `，评分 ${Math.round(score)}（候选 ${winner}）` : ''
+            notify(`生成完成！本章 ${word_count} 字${scoreHint}`)
           } catch (e) { notify(e.message, true) }
         },
         onError: (msg) => { setStreaming(false); notify(msg, true) },
@@ -253,7 +257,7 @@ export default function ChapterWorkspace({ project, notify }) {
 
   function runGenerateAuto(node) {
     setStreaming(true)
-    setStreamText('')
+    setStreamText('正在启动并行生成，请稍候…')
     abortRef.current = generateChapterStream(
       project.id,
       { outline_node_id: node.id, action: 'new', instruction: '' },
@@ -261,19 +265,23 @@ export default function ChapterWorkspace({ project, notify }) {
         onDelta: (t) => setStreamText((s) => s + t),
         onReplace: (t) => setStreamText(t),
         onStatus: ({ event, message }) => {
-          if (message) notify(message, event === 'retry')
+          if (message) {
+            setStreamText(message)
+            notify(message, event === 'retry')
+          }
         },
         onWordCount: (data) => {
           notify(data.message || `本章字数：${data.word_count} 字`)
         },
-        onDone: async ({ chapter_id, word_count }) => {
+        onDone: async ({ chapter_id, word_count, score, winner }) => {
           setStreaming(false)
           try {
             const ch = await api.getChapter(chapter_id)
             setChapter(ch)
             setStreamText('')
             await loadStructure()
-            notify(`生成完成！本章 ${word_count} 字`)
+            const scoreHint = score != null ? `，评分 ${Math.round(score)}（候选 ${winner}）` : ''
+            notify(`生成完成！本章 ${word_count} 字${scoreHint}`)
 
             // 自动确认
             if (autoModeRef.current) {

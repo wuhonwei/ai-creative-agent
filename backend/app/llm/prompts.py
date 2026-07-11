@@ -16,7 +16,8 @@ SYSTEM_WRITER = (
     "你是一位资深中文小说家与故事架构师，擅长长篇连载创作。"
     "你严格遵守已设定的世界观、人物性格与已发生的剧情，保持前后一致，"
     "不擅自推翻既有设定，不出现与历史情节矛盾的内容。"
-    "文笔细腻、叙事流畅，对话自然，节奏张弛有度。"
+    "文笔凝练、叙事流畅，对话自然，节奏张弛有度；"
+    "惜字如金，每句话都要推进情节、揭示人物或渲染氛围，禁止废话与重复阐释。"
 )
 
 # 方案2：生成时预防 AI 写作痕迹（精简版，完整规则留给生成后 humanize）
@@ -28,29 +29,95 @@ HUMANIZER_PREVENTION_RULES = """
    - 对话要口语化、有角色个性，不要人人像播音稿；叙述句式长短交替，忌句句同构。
    - 不用「业内人士指出」「专家认为」等模糊归因；心理活动写具体，不写空泛感慨。
    - 禁用 AI 高频词：此外、然而、综上所述、值得注意的是、毋庸置疑、无缝、赋能等。
-   - 结尾留悬念即可，不要「未来可期」「意义重大」式空洞收束。"""
+   - 结尾留悬念即可，不要「未来可期」「意义重大」式空洞收束。
+8. **精炼禁废话**：严格遵守 concise-fiction 技能中的「Prompt 注入规则」，尤其禁止「是 X，不是 Y」式对比句。"""
 
 _HUMANIZER_SKILL_FALLBACK = """\
 识别并改写 AI 写作痕迹： inflated symbolism、promotional language、superficial -ing analyses、
 vague attributions、em dash overuse、rule of three、AI vocabulary、negative parallelisms。
 保留剧情与人设，让文字读起来像资深作者手写。"""
 
+_CONCISE_FICTION_PROMPT_FALLBACK = """\
+**精炼写作（硬性要求）**：
+- 惜字如金：能删则删，能一句说清不用两句；禁止为凑字数注水、叠床架屋。
+- 禁止对比式废话：不用「是 X，不是 Y」「这不是 A，而是 B」「与其说……不如说……」等否定式阐释句；直接写事实与动作。
+- 禁止解释性旁白：不写「这意味着……」「这让他意识到……」「仿佛在诉说着……」等把读者当傻子的解读。
+- 禁止同义反复：同一信息不换说法重复两遍；形容词、副词能省则省，不用三连修饰。
+- 心理与动作写具体，不写空泛感慨；对话简短有力，去掉寒暄、客套、说教和总结陈词。
+- 叙述优先用动词推进，少用「感到」「似乎」「某种」「一种」等模糊填充词。"""
 
-def _humanizer_skill_path() -> Path:
-    return Path(__file__).resolve().parents[3] / ".cursor" / "skills" / "humanizer" / "SKILL.md"
+_CONCISE_FICTION_REVIEW_FALLBACK = """\
+4. **精炼度**：是否存在废话、重复阐释、「是 X 不是 Y」式对比句、解释性旁白或凑字注水；若有明显啰嗦应判为不通过。"""
 
 
-def load_humanizer_skill_content() -> str:
-    """读取项目内 humanizer 技能全文；缺失时用内置摘要。"""
-    skill_path = _humanizer_skill_path()
+def _skills_dir() -> Path:
+    return Path(__file__).resolve().parents[3] / ".cursor" / "skills"
+
+
+def _load_skill_body(slug: str) -> str:
+    """读取 skill 正文（去掉 YAML frontmatter）。"""
+    skill_path = _skills_dir() / slug / "SKILL.md"
     if not skill_path.exists():
-        return _HUMANIZER_SKILL_FALLBACK
+        return ""
     text = skill_path.read_text(encoding="utf-8")
     if text.startswith("---"):
         parts = text.split("---", 2)
         if len(parts) >= 3:
             text = parts[2].strip()
     return text
+
+
+def _extract_skill_section(body: str, heading: str) -> str:
+    """截取 skill 中某个 ## 章节（不含子章节）。"""
+    if not body:
+        return ""
+    marker = f"## {heading}"
+    start = body.find(marker)
+    if start == -1:
+        return ""
+    start += len(marker)
+    # 下一个同级 ## 标题处截断
+    rest = body[start:]
+    end = len(rest)
+    for line in rest.splitlines():
+        if line.startswith("## ") and not line.startswith("### "):
+            pos = rest.find(line)
+            if pos > 0:
+                end = pos
+                break
+    return rest[:end].strip()
+
+
+def _humanizer_skill_path() -> Path:
+    return _skills_dir() / "humanizer" / "SKILL.md"
+
+
+def load_humanizer_skill_content() -> str:
+    """读取项目内 humanizer 技能全文；缺失时用内置摘要。"""
+    text = _load_skill_body("humanizer")
+    return text or _HUMANIZER_SKILL_FALLBACK
+
+
+def load_concise_fiction_prompt_rules() -> str:
+    """读取 concise-fiction 技能的「Prompt 注入规则」；缺失时用内置摘要。"""
+    body = _load_skill_body("concise-fiction")
+    section = _extract_skill_section(body, "Prompt 注入规则")
+    return section or _CONCISE_FICTION_PROMPT_FALLBACK
+
+
+def load_concise_fiction_review_rules() -> str:
+    """读取 concise-fiction 技能的「审查清单」；缺失时用内置摘要。"""
+    body = _load_skill_body("concise-fiction")
+    section = _extract_skill_section(body, "审查清单")
+    if not section:
+        return _CONCISE_FICTION_REVIEW_FALLBACK
+    return f"4. **精炼度**（依据 concise-fiction 技能）：\n{section}"
+
+
+def load_concise_fiction_skill_content() -> str:
+    """读取 concise-fiction 技能全文；缺失时用 prompt 规则摘要。"""
+    text = _load_skill_body("concise-fiction")
+    return text or _CONCISE_FICTION_PROMPT_FALLBACK
 
 
 def _strip_model_fences(text: str) -> str:
@@ -244,12 +311,11 @@ def build_chapter_prompt(project: dict, characters: list[dict],
     elif instruction:
         parts.append(f"\n【补充要求】{instruction}")
 
-    # 字数控制：给一个 ±15% 的浮动区间，便于模型在不破坏情节完整性的前提下收尾
-    low = int(target_words * 0.85)
-    high = int(target_words * 1.15)
+    # 字数：硬性下限来自配置，目标字数为软约束，不设上限
+    word_min = settings.chapter_word_count_min
     parts.append(
         f"\n请直接写出本章正文。要求：\n"
-        f"1. 篇幅约 {target_words} 字(包括标点符号)（控制在 {low}-{high} 字之间），"
+        f"1. 篇幅不少于 {word_min} 字（含标点），建议约 {target_words} 字，不设上限；"
         f"围绕本章梗概合理安排节奏，写完整一个自然的章节段落，不要为凑字数注水，也不要草草收尾。\n"
         f"2. **严格衔接前文**：必须自然承接最近章节的内容，人物状态、场景位置、对话语境要连贯一致，"
         f"不能出现与前文矛盾的情节。开头要体现与上一章的连续性。\n"
@@ -258,7 +324,8 @@ def build_chapter_prompt(project: dict, characters: list[dict],
         f"4. 以叙事和对话推进剧情，避免大段空泛的总结。\n"
         f"5. **章节结尾必须留有悬念或引发期待**：通过未解之谜、意外转折、新的冲突苗头、"
         f"未完成的对话、突然出现的线索等方式，让读者产生\"接下来会怎样？\"的期待感，吸引继续阅读下一章。\n"
-        f"6. 只输出正文本身，不要输出标题、解释、大纲或额外说明。"
+        f"6. 只输出正文本身，不要输出标题、解释、大纲或额外说明。\n"
+        f"{load_concise_fiction_prompt_rules()}"
     )
     if settings.enable_humanizer_prevention:
         parts.append(HUMANIZER_PREVENTION_RULES)
@@ -333,6 +400,7 @@ def build_review_prompt(project: dict, chapter_title: str, chapter_content: str,
                         chapter_synopsis: str, history_summary: str,
                         recent_text: str) -> list[dict]:
     """审查刚生成的章节：逻辑是否合理、是否与上下文衔接。"""
+    conciseness_check = load_concise_fiction_review_rules()
     user = f"""你是专业的小说审稿编辑，现在需要审查刚生成的章节质量。
 
 【作品背景】
@@ -357,6 +425,7 @@ def build_review_prompt(project: dict, chapter_title: str, chapter_content: str,
 1. **逻辑合理性**：情节推进是否合理，人物行为动机是否自洽，有无明显逻辑漏洞。
 2. **上下文衔接**：与前文是否自然衔接，人物状态、场景、时间线是否连贯，有无矛盾。
 3. **梗概符合度**：是否按照梗概展开，有无偏离或遗漏关键情节。
+{conciseness_check}
 
 仅输出 JSON，格式如下：
 {{
@@ -370,13 +439,75 @@ def build_review_prompt(project: dict, chapter_title: str, chapter_content: str,
 
 
 # ---------------------------------------------------------------------------
+# 5c. 章节质量评分（并行候选择优）
+# ---------------------------------------------------------------------------
+def build_chapter_score_prompt(project: dict, chapter_title: str, chapter_content: str,
+                               chapter_synopsis: str, history_summary: str,
+                               recent_text: str) -> list[dict]:
+    """对 humanize 后的章节打分，供多路并行生成择优。"""
+    word_min = settings.chapter_word_count_min
+    conciseness_check = load_concise_fiction_review_rules()
+    user = f"""你是专业的小说审稿编辑，请对以下章节综合打分（0-100，整数或一位小数）。
+
+【作品背景】
+标题：{project.get('title', '')}
+背景设定：{project.get('premise', '')}
+整体氛围：{project.get('mood', '')}
+文风：{project.get('style', '') or '（未指定）'}
+
+【历史剧情摘要】
+{history_summary if history_summary else '（本章是开篇，无前文）'}
+
+【最近章节正文（用于检查衔接）】
+{recent_text if recent_text else '（无最近章节）'}
+
+【本章梗概（预期写什么）】
+{chapter_synopsis}
+
+【待评章节正文】
+{chapter_title}
+{chapter_content}
+
+评分维度（各 0-100，综合 score 为加权印象分，不必严格平均）：
+1. coherence：逻辑与叙事是否自洽
+2. continuity：与前文衔接、人物状态是否连贯
+3. synopsis_fit：是否符合本章梗概
+4. human_quality：是否像人写、AI 味是否低（套话、升华句、机械排比）
+5. conciseness：是否精炼、废话与「是 X 不是 Y」式啰嗦是否少
+
+硬性扣分：字数少于 {word_min} 字时 score 不得超过 40。
+
+{conciseness_check}
+
+仅输出 JSON：
+{{
+  "score": 85,
+  "rationale": "一句话说明得分理由",
+  "dimensions": {{
+    "coherence": 90,
+    "continuity": 85,
+    "synopsis_fit": 80,
+    "human_quality": 88,
+    "conciseness": 82
+  }}
+}}"""
+    return [
+        {"role": "system", "content": "你是严谨的小说审稿编辑，只输出 JSON。"},
+        {"role": "user", "content": user},
+    ]
+
+
+# ---------------------------------------------------------------------------
 # 5b. 生成后 humanize 润色（方案3）
 # ---------------------------------------------------------------------------
 def build_humanizer_prompt(project: dict, chapter_title: str,
                            chapter_content: str,
-                           word_min: int = 1700, word_max: int = 3000) -> list[dict]:
-    """对已定稿章节做去 AI 味润色，规则来自 .cursor/skills/humanizer/SKILL.md。"""
+                           word_min: int | None = None) -> list[dict]:
+    """对已定稿章节做去 AI 味润色，规则来自 humanizer + concise-fiction 技能。"""
+    if word_min is None:
+        word_min = settings.chapter_word_count_min
     skill_guide = load_humanizer_skill_content()
+    concise_guide = load_concise_fiction_skill_content()
     style_hint = ""
     if project.get("style"):
         style_hint += f"文风：{project['style']}。"
@@ -386,11 +517,14 @@ def build_humanizer_prompt(project: dict, chapter_title: str,
     system = (
         "你是一位资深中文小说编辑，专门去除 AI 生成文本的痕迹，让文字读起来像人类作者手写。"
         "你必须严格遵守 humanizer 技能指南中的模式识别与改写规则。"
-        "润色时不得改变剧情走向、人物关系、关键事件与伏笔；只改表达方式。"
+        "润色时不得改变剧情走向、人物关系、关键事件与伏笔；只改表达方式，删废话、压啰嗦，让文字更精炼。"
         "仅输出润色后的正文，不要输出标题、解释、变更摘要或 Markdown 围栏。"
     )
     user = f"""【humanizer 技能指南】
 {skill_guide}
+
+【concise-fiction 精炼写作技能】
+{concise_guide}
 
 【作品风格参考】
 {style_hint or '（按原文风格保持即可）'}
@@ -402,9 +536,10 @@ def build_humanizer_prompt(project: dict, chapter_title: str,
 
 请 humanize 以上正文：
 1. 识别并改写 AI 写作模式（套话、排比、破折号分析句、模糊归因、AI 高频词等）。
-2. 保持剧情、人物、时间线、伏笔完全不变；对话可更口语化但须符合角色性格。
-3. 字数控制在 {word_min}-{word_max} 字之间（含标点），尽量接近原文长度。
-4. 只输出润色后的正文本身。"""
+2. 严格执行精炼要求：删除废话与同义反复，把「是 X，不是 Y」等对比阐释句改为直接叙述。
+3. 保持剧情、人物、时间线、伏笔完全不变；对话可更口语化但须符合角色性格。
+4. 字数不少于 {word_min} 字（含标点），不设上限；删废话后字数可少于原文，但不低于下限。
+5. 只输出润色后的正文本身。"""
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
