@@ -44,6 +44,17 @@
 
 ## 启动
 
+### 一键启动（Windows）
+
+在项目根目录双击 `start.bat`，或在终端执行：
+
+```powershell
+.\start.bat
+```
+
+脚本会各自打开一个窗口跑后端（8000）和前端（5173），就绪后打开 http://127.0.0.1:5173 。
+再次双击会先关掉占用这两个端口的旧进程再启动。双击 `stop.bat` 可同时停掉两边。
+
 ### 1. 配置 DeepSeek API Key
 
 复制 `backend/.env.example` 为 `backend/.env`，填入你的 Key（[platform.deepseek.com](https://platform.deepseek.com) 获取）：
@@ -52,7 +63,7 @@
 DEEPSEEK_API_KEY=sk-你的真实key
 ```
 
-### 2. 启动后端（端口 8000）
+### 2. 单独启动后端（端口 8000）
 
 依赖已装在 `backend/.venv`。在 `backend` 目录下：
 
@@ -83,7 +94,7 @@ DEEPSEEK_API_KEY=sk-你的真实key
 脚本会在当前终端前台运行后端（能直接看到日志），按 `Ctrl+C` 停止。
 若想腾出终端，可在新开的窗口里运行，或在命令末尾加 `&` 放到后台。
 
-### 3. 启动前端（端口 5173）
+### 3. 单独启动前端（端口 5173）
 
 在 `frontend` 目录下：
 
