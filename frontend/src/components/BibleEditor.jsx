@@ -5,14 +5,46 @@ export default function BibleEditor({ project, onSaved, notify }) {
   const [form, setForm] = useState(project)
   const [chars, setChars] = useState([])
   const [saving, setSaving] = useState(false)
+  const [idea, setIdea] = useState('')
+  const [filling, setFilling] = useState(false)
 
-  useEffect(() => { setForm(project) }, [project.id])
+  useEffect(() => { setForm(project); setIdea('') }, [project.id])
 
   useEffect(() => {
     api.listCharacters(project.id).then(setChars).catch((e) => notify(e.message, true))
   }, [project.id])
 
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })) }
+
+  function applyFill(data) {
+    setForm((f) => ({ ...f, ...data.project }))
+    setChars(data.characters || [])
+    onSaved?.()
+  }
+
+  async function autofill(replace = false) {
+    const text = idea.trim()
+    if (!text) {
+      notify('先写下开头思路', true)
+      return
+    }
+    const hasContent = ['premise', 'mood', 'style', 'world_rules'].some((k) => (form[k] || '').trim())
+      || chars.length > 0
+    if (hasContent && !replace && !confirm(
+      '已有故事圣经或角色档案。自动填充会覆盖这些内容，并删除现有角色的形象设定。继续？'
+    )) return
+
+    setFilling(true)
+    try {
+      const data = await api.autofillBible(project.id, { idea: text, replace: hasContent || replace })
+      applyFill(data)
+      notify(`已填好故事圣经和 ${data.characters.length} 个角色`)
+    } catch (e) {
+      notify(e.message, true)
+    } finally {
+      setFilling(false)
+    }
+  }
 
   async function save() {
     setSaving(true)
@@ -63,6 +95,18 @@ export default function BibleEditor({ project, onSaved, notify }) {
         <h2>故事圣经</h2>
         <p className="hint">
           这些设定会作为"长期记忆"始终提供给模型，是保持千万字一致性的根基。
+        </p>
+        <label>开头思路</label>
+        <textarea rows={3} value={idea}
+          placeholder="用几句话写下故事从哪里开始、你想写的那个人和那件事"
+          onChange={(e) => setIdea(e.target.value)} />
+        <div className="row end" style={{ marginTop: 8 }}>
+          <button onClick={() => autofill(false)} disabled={filling || !idea.trim()}>
+            {filling ? '填充中…' : '自动填充圣经与角色'}
+          </button>
+        </div>
+        <p className="hint">
+          填充时会参考这部作品的癫文宝经。已有圣经或角色时，会先确认再覆盖。
         </p>
         <label>作品标题</label>
         <input value={form.title || ''} onChange={(e) => set('title', e.target.value)} />

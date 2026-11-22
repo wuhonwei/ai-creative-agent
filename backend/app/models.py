@@ -26,7 +26,7 @@ class Project(SQLModel, table=True):
     mood: str = ""             # 整体氛围
     style: str = ""            # 文风要求（人称、节奏、参考作品等）
     world_rules: str = ""      # 世界观规则 / 设定约束
-    dianwen: str = ""          # 癫文宝经：生成大纲时参考的通用情节原则，空则用内置默认
+    dianwen: str = ""          # 癫文宝经：生成大纲、填充故事圣经时参考，空则用内置默认
     target_words: int = 0      # 目标总字数（0 表示不限）
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)

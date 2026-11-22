@@ -14,6 +14,12 @@ class ProjectCreate(BaseModel):
     target_words: int = 0
 
 
+class BibleAutofillRequest(BaseModel):
+    """用开头思路自动填充故事圣经和角色档案。"""
+    idea: str
+    replace: bool = False      # 已有圣经或角色时，需明确确认才覆盖
+
+
 class ProjectUpdate(BaseModel):
     title: Optional[str] = None
     premise: Optional[str] = None
