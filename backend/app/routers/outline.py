@@ -16,6 +16,7 @@ from app.schemas import (
 from app.services import context_builder, generation
 from app.services.app_settings import get_dianwen
 from app.services.character_profiles import supplement_characters_from_outline
+from app.services.outline_synopsis import lengthen_chapter_synopses, lengthen_outline_volumes
 
 router = APIRouter(prefix="/api", tags=["outline"])
 logger = logging.getLogger(__name__)
@@ -78,7 +79,7 @@ async def generate_outline(project_id: int, body: OutlineGenerateRequest,
     async def event_stream():
         collected: list[str] = []
         try:
-            async for delta in client.chat_stream(msgs, temperature=0.8, max_tokens=16384):
+            async for delta in client.chat_stream(msgs, temperature=0.8, max_tokens=32768):
                 collected.append(delta)
                 logger.info(f"[outline] delta: {delta[:80]}")
                 yield _sse("delta", {"text": delta})
@@ -95,6 +96,9 @@ async def generate_outline(project_id: int, body: OutlineGenerateRequest,
             logger.error(f"[outline] JSON 解析失败，原始输出片段：{raw[:300]}")
             yield _sse("error", {"message": f"模型未返回预期的大纲 JSON，原始输出片段：{raw[:300]}"})
             return
+
+        yield _sse("status", {"message": "正在把不足 100 字的章节梗概补长…"})
+        parsed["volumes"] = await lengthen_outline_volumes(parsed.get("volumes") or [])
 
         # 写库
         from app.db import engine
@@ -272,7 +276,7 @@ async def expand_volume(volume_id: int, body: VolumeExpandRequest,
     async def event_stream():
         collected: list[str] = []
         try:
-            async for delta in client.chat_stream(msgs, temperature=0.8, max_tokens=16384):
+            async for delta in client.chat_stream(msgs, temperature=0.8, max_tokens=32768):
                 collected.append(delta)
                 logger.info(f"[expand] delta: {delta[:80]}")  # 日志打印每次返回的前80字符
                 yield _sse("delta", {"text": delta})
@@ -289,6 +293,9 @@ async def expand_volume(volume_id: int, body: VolumeExpandRequest,
             logger.error(f"[expand] JSON 解析失败，原始输出片段：{raw[:300]}")
             yield _sse("error", {"message": f"模型未返回预期的章节 JSON，原始输出片段：{raw[:300]}"})
             return
+
+        yield _sse("status", {"message": "正在把不足 100 字的章节梗概补长…"})
+        parsed["chapters"] = await lengthen_chapter_synopses(parsed.get("chapters") or [])
 
         # 写库：清空旧章节(如果 replace),插入新章节
         from app.db import engine
