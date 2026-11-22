@@ -128,8 +128,12 @@ def _strip_model_fences(text: str) -> str:
     return t.strip()
 
 
-def _bible_block(project: dict, characters: list[dict]) -> str:
-    """把故事圣经 + 角色设定拼成上下文块。"""
+def _bible_block(project: dict, characters: list[dict], include_state: bool = True) -> str:
+    """把故事圣经 + 角色设定拼成上下文块。
+
+    include_state：正文写作要带上随剧情更新的当前状态。
+    生成大纲时关掉，避免把尚未发生的状态写进卷章情节。
+    """
     lines = ["【故事圣经】"]
     lines.append(f"标题：{project.get('title', '')}")
     if project.get("premise"):
@@ -149,7 +153,7 @@ def _bible_block(project: dict, characters: list[dict]) -> str:
                 seg += f"（{c['role']}）"
             if c.get("description"):
                 seg += f"：{c['description']}"
-            if c.get("state"):
+            if include_state and c.get("state"):
                 seg += f"｜当前状态：{c['state']}"
             lines.append(seg)
     return "\n".join(lines)
@@ -204,9 +208,10 @@ def build_bible_fill_prompt(idea: str, title: str, dianwen: str) -> list[dict]:
 2. mood 用简短的词写出整体氛围。
 3. style 写人称、节奏和语言风格。
 4. world_rules 写这个世界不能打破的规则。
-5. characters 写 4 到 6 人，包含主角和对手。每人有姓名、定位、性格与秘密、开场时的处境。
+5. characters 写 4 到 6 人，包含主角和对手。每人有姓名、定位、性格与秘密。
    至少有一对人物：一方知道的关键信息，另一方不知道。
    角色之间要有能形成反差的身份或关系。
+   不要写角色的当前状态，也不要写开场这一刻正在做什么。状态要等正文确认后才更新。
 6. title：暂定标题如果是「未命名作品」或过空，另起一个贴切书名；否则沿用暂定标题。
 
 仅输出 JSON，不要任何额外文字：
@@ -217,7 +222,7 @@ def build_bible_fill_prompt(idea: str, title: str, dianwen: str) -> list[dict]:
   "style": "文风",
   "world_rules": "规则",
   "characters": [
-    {{"name": "姓名", "role": "定位", "description": "性格、欲望与秘密", "state": "开场时的处境"}}
+    {{"name": "姓名", "role": "定位", "description": "性格、欲望与秘密"}}
   ]
 }}"""
     return [
@@ -233,7 +238,7 @@ def build_outline_prompt(project: dict, characters: list[dict],
                          instruction: str = "", num_volumes: int = 0,
                          chapters_per_volume: int = 0,
                          dianwen: str = "") -> list[dict]:
-    bible = _bible_block(project, characters)
+    bible = _bible_block(project, characters, include_state=False)
 
     scale = ""
     if num_volumes:
@@ -286,7 +291,7 @@ def build_volume_chapters_prompt(project: dict, characters: list[dict],
     count：本卷目标章数（0 = 由模型决定）。
     单卷单次生成，章数可控，避免一次性生成全书章节导致 JSON 截断。
     """
-    bible = _bible_block(project, characters)
+    bible = _bible_block(project, characters, include_state=False)
 
     arc_lines = ["【全书卷结构（把握整体走向、控制节奏、合理埋伏笔）】"]
     for i, v in enumerate(all_volumes, 1):
@@ -925,7 +930,7 @@ def build_supplement_characters_prompt(project: dict, existing: list[dict],
 2. 不写路人、群体、地名、组织和物品。同一人的不同称呼合并成一个最常用的名字。
 3. 不要改写已有角色，也不要编造大纲里没出现的人。没有新人就返回空数组。
 4. description 写身份、性格、和已有人物的关系，以及这个人知道而别人不知道的事。
-5. state 写这个人在大纲开场时的处境。
+5. 不要写当前状态，也不要写此人此刻正在做的事。状态留空。
 
 仅输出 JSON，不要任何额外文字：
 {{
@@ -933,8 +938,7 @@ def build_supplement_characters_prompt(project: dict, existing: list[dict],
     {{
       "name": "姓名",
       "role": "定位",
-      "description": "身份、性格、关系与秘密",
-      "state": "开场时的处境"
+      "description": "身份、性格、关系与秘密"
     }}
   ]
 }}"""

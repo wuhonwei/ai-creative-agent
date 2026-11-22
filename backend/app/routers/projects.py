@@ -123,7 +123,6 @@ async def autofill_bible(project_id: int, body: BibleAutofillRequest,
             name=name,
             role=_as_text(item.get("role")),
             description=_as_text(item.get("description")),
-            state=_as_text(item.get("state")),
         ))
     if not new_characters:
         raise HTTPException(502, "模型未返回有效角色")

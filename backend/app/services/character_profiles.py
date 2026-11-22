@@ -70,7 +70,6 @@ async def supplement_characters_from_outline(session: Session, project_id: int) 
             name=name,
             role=str(item.get("role") or "").strip(),
             description=str(item.get("description") or "").strip(),
-            state=str(item.get("state") or "").strip(),
         ))
         seen.add(name)
         created.append(name)
