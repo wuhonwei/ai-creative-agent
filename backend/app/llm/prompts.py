@@ -188,9 +188,11 @@ def _dianwen_block(text: str) -> str:
     )
 
 
-def build_bible_fill_prompt(idea: str, title: str, dianwen: str) -> list[dict]:
+def build_bible_fill_prompt(idea: str, title: str, dianwen: str,
+                             core_character_count: int = 17) -> list[dict]:
     """根据开头思路填充故事圣经和角色档案，并参考癫文宝经。"""
     canon = (dianwen or "").strip() or DEFAULT_DIANWEN
+    count = core_character_count if core_character_count and core_character_count > 0 else 17
     shown_title = (title or "").strip() or "未命名作品"
     user = f"""作品暂定标题：{shown_title}
 
@@ -208,7 +210,8 @@ def build_bible_fill_prompt(idea: str, title: str, dianwen: str) -> list[dict]:
 2. mood 用简短的词写出整体氛围。
 3. style 写人称、节奏和语言风格。
 4. world_rules 写这个世界不能打破的规则。
-5. characters 写 4 到 6 人，包含主角和对手。每人有姓名、定位、性格与秘密。
+5. characters 正好写 {count} 个核心角色，包含主角和对手。每人有姓名、定位、性格与秘密。
+   人数必须是 {count}，不要少写，也不要多写。description 每人两三句，避免输出被截断。
    至少有一对人物：一方知道的关键信息，另一方不知道。
    角色之间要有能形成反差的身份或关系。
    不要写角色的当前状态，也不要写开场这一刻正在做什么。状态要等正文确认后才更新。

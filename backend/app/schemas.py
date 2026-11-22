@@ -18,6 +18,7 @@ class BibleAutofillRequest(BaseModel):
     """用开头思路自动填充故事圣经和角色档案。"""
     idea: str
     replace: bool = False      # 已有圣经或角色时，需明确确认才覆盖
+    core_character_count: Optional[int] = None  # 不填或小于 1 时按 17 人生成
 
 
 class ProjectUpdate(BaseModel):

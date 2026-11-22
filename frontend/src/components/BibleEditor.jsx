@@ -6,9 +6,10 @@ export default function BibleEditor({ project, onSaved, notify }) {
   const [chars, setChars] = useState([])
   const [saving, setSaving] = useState(false)
   const [idea, setIdea] = useState('')
+  const [coreCount, setCoreCount] = useState('')
   const [filling, setFilling] = useState(false)
 
-  useEffect(() => { setForm(project); setIdea('') }, [project.id])
+  useEffect(() => { setForm(project); setIdea(''); setCoreCount('') }, [project.id])
 
   useEffect(() => {
     api.listCharacters(project.id).then(setChars).catch((e) => notify(e.message, true))
@@ -34,9 +35,15 @@ export default function BibleEditor({ project, onSaved, notify }) {
       '已有故事圣经或角色档案。自动填充会覆盖这些内容，并删除现有角色的形象设定。继续？'
     )) return
 
+    const typed = Number(coreCount)
+    const coreCharacterCount = Number.isFinite(typed) && typed > 0 ? Math.floor(typed) : 17
     setFilling(true)
     try {
-      const data = await api.autofillBible(project.id, { idea: text, replace: hasContent || replace })
+      const data = await api.autofillBible(project.id, {
+        idea: text,
+        replace: hasContent || replace,
+        core_character_count: coreCharacterCount,
+      })
       applyFill(data)
       notify(`已填好故事圣经和 ${data.characters.length} 个角色`)
     } catch (e) {
@@ -100,13 +107,18 @@ export default function BibleEditor({ project, onSaved, notify }) {
         <textarea rows={3} value={idea}
           placeholder="用几句话写下故事从哪里开始、你想写的那个人和那件事"
           onChange={(e) => setIdea(e.target.value)} />
-        <div className="row end" style={{ marginTop: 8 }}>
+        <div className="row" style={{ marginTop: 8, alignItems: 'flex-end' }}>
+          <div style={{ width: 160 }}>
+            <label>核心角色人数</label>
+            <input type="number" min="1" value={coreCount} placeholder="17"
+              onChange={(e) => setCoreCount(e.target.value)} />
+          </div>
           <button onClick={() => autofill(false)} disabled={filling || !idea.trim()}>
             {filling ? '填充中…' : '自动填充圣经与角色'}
           </button>
         </div>
         <p className="hint">
-          填充时会参考这部作品的癫文宝经。已有圣经或角色时，会先确认再覆盖。
+          不填核心角色人数时按 17 人生成。填充时会参考这部作品的癫文宝经。已有圣经或角色时，会先确认再覆盖。
         </p>
         <label>作品标题</label>
         <input value={form.title || ''} onChange={(e) => set('title', e.target.value)} />

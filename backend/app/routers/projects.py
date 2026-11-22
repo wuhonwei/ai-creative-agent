@@ -92,10 +92,11 @@ async def autofill_bible(project_id: int, body: BibleAutofillRequest,
         )
 
     dianwen = prompts.resolve_dianwen(None, project.dianwen)
-    msgs = prompts.build_bible_fill_prompt(idea, project.title, dianwen)
+    count = body.core_character_count if body.core_character_count and body.core_character_count > 0 else 17
+    msgs = prompts.build_bible_fill_prompt(idea, project.title, dianwen, count)
     try:
-        # 推理模型会先消耗大量 token，预算过小会把 JSON 截断。
-        raw = await client.chat(msgs, temperature=0.8, max_tokens=16384)
+        # 推理模型会先消耗大量 token；人数多时再抬高上限，避免角色列表被截断。
+        raw = await client.chat(msgs, temperature=0.8, max_tokens=min(32768, 8192 + count * 1200))
     except client.LLMError as e:
         raise HTTPException(502, str(e)) from e
 
