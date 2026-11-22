@@ -63,9 +63,11 @@ async def generate_outline(project_id: int, body: OutlineGenerateRequest,
             )
 
     characters = context_builder.characters_to_dicts(session, project_id)
+    dianwen = prompts.resolve_dianwen(body.dianwen, project.dianwen)
     msgs = prompts.build_outline_prompt(
         context_builder.project_to_dict(project), characters,
         body.instruction, body.num_volumes, body.chapters_per_volume,
+        dianwen=dianwen,
     )
 
     logger.info(f"开始流式生成大纲：project_id={project_id}, num_volumes={body.num_volumes}, "
@@ -246,10 +248,12 @@ async def expand_volume(volume_id: int, body: VolumeExpandRequest,
             })
 
     characters = context_builder.characters_to_dicts(session, volume.project_id)
+    dianwen = prompts.resolve_dianwen(body.dianwen, project.dianwen)
     msgs = prompts.build_volume_chapters_prompt(
         context_builder.project_to_dict(project), characters,
         all_volumes, {"title": volume.title, "synopsis": volume.synopsis},
         previous_chapters, body.count, body.instruction,
+        dianwen=dianwen,
     )
 
     logger.info(f"开始流式展开卷：volume_id={volume_id}, title={volume.title}, "

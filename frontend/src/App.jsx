@@ -156,7 +156,12 @@ export default function App() {
                 />
               )}
               {tab === 'outline' && (
-                <OutlineView project={active} notify={notify} sendNotification={sendNotification} />
+                <OutlineView
+                  project={active}
+                  notify={notify}
+                  sendNotification={sendNotification}
+                  onSaved={loadProjects}
+                />
               )}
               {tab === 'workspace' && (
                 <ChapterWorkspace project={active} notify={notify} sendNotification={sendNotification} />

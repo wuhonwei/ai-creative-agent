@@ -20,6 +20,7 @@ class ProjectUpdate(BaseModel):
     mood: Optional[str] = None
     style: Optional[str] = None
     world_rules: Optional[str] = None
+    dianwen: Optional[str] = None
     target_words: Optional[int] = None
 
 
@@ -60,6 +61,9 @@ class OutlineGenerateRequest(BaseModel):
     instruction: str = ""          # 额外指引，例如"分 3 卷，主线偏悬疑"
     num_volumes: int = 0           # 0 = 由模型自行决定
     chapters_per_volume: int = 0   # 0 = 由模型自行决定
+    # None：沿用项目里已保存的癫文宝经（空则用内置默认）
+    # ""：这次生成不参考癫文宝经
+    dianwen: Optional[str] = None
 
 
 class VolumeExpandRequest(BaseModel):
@@ -67,6 +71,7 @@ class VolumeExpandRequest(BaseModel):
     count: int = 0                 # 本卷目标章数，0 = 由模型决定
     instruction: str = ""          # 额外指引
     replace: bool = True           # True = 先清空本卷已有章节节点再生成
+    dianwen: Optional[str] = None  # 同 OutlineGenerateRequest.dianwen
 
 
 # ---------- Chapter generation ----------

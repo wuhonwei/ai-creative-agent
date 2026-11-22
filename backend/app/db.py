@@ -21,6 +21,9 @@ engine = create_engine(
 # create_all 只建新表、不改旧表结构，所以新增字段要在这里手动补。
 # 格式：表名 -> {列名: "列定义（带默认值）"}
 _COLUMN_MIGRATIONS = {
+    "project": {
+        "dianwen": "TEXT NOT NULL DEFAULT ''",
+    },
     "shot": {
         "shot_size": "TEXT NOT NULL DEFAULT ''",
         "sound": "TEXT NOT NULL DEFAULT ''",

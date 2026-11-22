@@ -1,7 +1,19 @@
 import React, { useEffect, useState } from 'react'
 import { api, expandVolumeStream, generateOutlineStream } from '../api'
 
-export default function OutlineView({ project, notify, sendNotification }) {
+// 与 backend/app/llm/prompts.py 的 DEFAULT_DIANWEN 保持一致。
+// 项目尚未保存过时显示这段；保存后以项目里的文本为准。
+export const DEFAULT_DIANWEN = `1.读者阅读时未曾思考过这种情况，想知道下一步如何发展；
+2.人物A传达了信息X给人物B，人物B恍然大悟，明白了未明确的道理，但这个道理人物A不知道。
+3.在未达到小说尾声时，读者无法猜不到结局，或者根据传统思路猜想的结局是错的。
+4.爽点和反差，让读者感到舒爽且惊诧。`
+
+function dianwenOf(project) {
+  const saved = (project?.dianwen || '').trim()
+  return saved || DEFAULT_DIANWEN
+}
+
+export default function OutlineView({ project, notify, sendNotification, onSaved }) {
   const [nodes, setNodes] = useState([])
   const [loading, setLoading] = useState(false)
   const [instruction, setInstruction] = useState('')
@@ -10,12 +22,23 @@ export default function OutlineView({ project, notify, sendNotification }) {
   const [blocked, setBlocked] = useState(false)  // 命中 409 正文保护时显示强制重生入口
   const [expanding, setExpanding] = useState(null)  // 正在展开章节的卷 id
   const [volCount, setVolCount] = useState({})       // 每卷的目标章数输入
+  const [dianwenOpen, setDianwenOpen] = useState(false)
+  const [dianwen, setDianwen] = useState(() => dianwenOf(project))
+  const [dianwenSaved, setDianwenSaved] = useState(() => dianwenOf(project))
+  const [savingDianwen, setSavingDianwen] = useState(false)
 
   async function load() {
     try { setNodes(await api.getOutline(project.id)) }
     catch (e) { notify(e.message, true) }
   }
-  useEffect(() => { load(); setBlocked(false) }, [project.id])
+  useEffect(() => {
+    load()
+    setBlocked(false)
+    const text = dianwenOf(project)
+    setDianwen(text)
+    setDianwenSaved(text)
+    setDianwenOpen(false)
+  }, [project.id])
 
   async function generate(force = false) {
     if (force && !confirm(
@@ -30,6 +53,7 @@ export default function OutlineView({ project, notify, sendNotification }) {
       instruction,
       num_volumes: Number(numVolumes) || 0,
       chapters_per_volume: Number(chPerVol) || 0,
+      dianwen,
     }, true, force, {
       onDelta: (text) => {
         totalChars += text.length
@@ -68,6 +92,7 @@ export default function OutlineView({ project, notify, sendNotification }) {
       count: Number(volCount[vol.id]) || 0,
       instruction,
       replace: true,
+      dianwen,
     }, {
       onDelta: (text) => {
         totalChars += text.length
@@ -98,6 +123,20 @@ export default function OutlineView({ project, notify, sendNotification }) {
     if (!confirm('删除该节点（及其子章节）？')) return
     try { await api.deleteNode(id); await load() }
     catch (e) { notify(e.message, true) }
+  }
+
+  async function saveDianwen() {
+    setSavingDianwen(true)
+    try {
+      await api.updateProject(project.id, { dianwen })
+      setDianwenSaved(dianwen)
+      notify('癫文宝经已保存')
+      onSaved?.()
+    } catch (e) {
+      notify(e.message, true)
+    } finally {
+      setSavingDianwen(false)
+    }
   }
 
   function setField(id, k, v) {
@@ -131,6 +170,32 @@ export default function OutlineView({ project, notify, sendNotification }) {
             <input type="number" value={chPerVol} onChange={(e) => setChPerVol(e.target.value)} />
           </div>
         </div>
+        <div className="row" style={{ marginTop: 12 }}>
+          <button type="button" className={dianwenOpen ? 'primary' : ''}
+            onClick={() => setDianwenOpen((v) => !v)}>
+            {dianwenOpen ? '收起癫文宝经' : '癫文宝经'}
+          </button>
+          {dianwen !== dianwenSaved && <span className="hint" style={{ margin: 0 }}>未保存</span>}
+        </div>
+        {dianwenOpen && (
+          <div className="dianwen-box">
+            <p className="hint" style={{ marginTop: 0 }}>
+              通用情节原则，由多条想法组成。生成大纲、展开本卷章节时会参考这里的文本。正文写作不使用。
+            </p>
+            <textarea rows={6} value={dianwen}
+              onChange={(e) => setDianwen(e.target.value)} />
+            <div className="row end" style={{ marginTop: 8 }}>
+              <button type="button" onClick={() => setDianwen(DEFAULT_DIANWEN)}
+                disabled={savingDianwen}>
+                恢复默认
+              </button>
+              <button type="button" className="primary" onClick={saveDianwen}
+                disabled={savingDianwen || dianwen === dianwenSaved}>
+                {savingDianwen ? '保存中…' : '保存'}
+              </button>
+            </div>
+          </div>
+        )}
         <label>额外指引（选填）</label>
         <textarea rows={2} value={instruction}
           placeholder="如：主线偏宫廷权谋，前期慢热，第3章引入主要反派"

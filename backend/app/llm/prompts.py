@@ -156,11 +156,41 @@ def _bible_block(project: dict, characters: list[dict]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 癫文宝经：只在生成大纲（含展开某一卷的章节）时参考，不进入正文写作。
+# ---------------------------------------------------------------------------
+DEFAULT_DIANWEN = """1.读者阅读时未曾思考过这种情况，想知道下一步如何发展；
+2.人物A传达了信息X给人物B，人物B恍然大悟，明白了未明确的道理，但这个道理人物A不知道。
+3.在未达到小说尾声时，读者无法猜不到结局，或者根据传统思路猜想的结局是错的。
+4.爽点和反差，让读者感到舒爽且惊诧。"""
+
+
+def resolve_dianwen(provided: str | None, stored: str | None = None) -> str:
+    """请求里显式传入的文本优先；未传时用项目已保存的文本，仍为空则用内置默认。"""
+    if provided is not None:
+        return provided.strip()
+    stored = (stored or "").strip()
+    return stored or DEFAULT_DIANWEN
+
+
+def _dianwen_block(text: str) -> str:
+    text = (text or "").strip()
+    if not text:
+        return ""
+    return (
+        "\n【癫文宝经】\n"
+        "下面是通用情节原则，由多条想法组成。设计卷章情节时要参考这些想法，"
+        "把它们落实成具体事件。不要把原则原文写进标题或梗概。\n"
+        f"{text}\n"
+    )
+
+
+# ---------------------------------------------------------------------------
 # 1. 生成分层大纲
 # ---------------------------------------------------------------------------
 def build_outline_prompt(project: dict, characters: list[dict],
                          instruction: str = "", num_volumes: int = 0,
-                         chapters_per_volume: int = 0) -> list[dict]:
+                         chapters_per_volume: int = 0,
+                         dianwen: str = "") -> list[dict]:
     bible = _bible_block(project, characters)
 
     scale = ""
@@ -176,7 +206,7 @@ def build_outline_prompt(project: dict, characters: list[dict],
     user = f"""{bible}
 
 请基于以上设定，设计这部小说的分层大纲。{scale}{extra}
-
+{_dianwen_block(dianwen)}
 要求：
 1. 先给出"卷"级结构，每卷一句主题。
 2. 每卷下给出若干"章"，每章包含简短标题与 1-3 句梗概（说明本章发生的关键事件、推进的情节）。
@@ -203,7 +233,8 @@ def build_outline_prompt(project: dict, characters: list[dict],
 def build_volume_chapters_prompt(project: dict, characters: list[dict],
                                  all_volumes: list[dict], target_volume: dict,
                                  previous_chapters: list[dict],
-                                 count: int = 0, instruction: str = "") -> list[dict]:
+                                 count: int = 0, instruction: str = "",
+                                 dianwen: str = "") -> list[dict]:
     """只为某一卷展开详细章节大纲。
 
     all_volumes：全书各卷的 {title, synopsis}，给模型把握整体节奏；
@@ -246,7 +277,7 @@ def build_volume_chapters_prompt(project: dict, characters: list[dict],
 {arc}{history}
 
 现在请只为【{target_volume.get('title', '')}】（本卷主题：{target_volume.get('synopsis', '')}）设计详细的章节大纲。{count_req}{extra}
-
+{_dianwen_block(dianwen)}
 要求：
 1. 参考后续各卷的主题,合理控制本卷节奏、埋设伏笔,但本卷章节只写本卷主题范围内的事件,不要把后续卷的核心冲突或高潮提前写进本卷。
 2. 严格承接前面各卷已发生的剧情,人物状态、事件顺序、伏笔呼应要与前文一致,不能出现矛盾。
