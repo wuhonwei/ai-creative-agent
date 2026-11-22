@@ -14,6 +14,7 @@ from app.schemas import (
     VolumeExpandRequest,
 )
 from app.services import context_builder, generation
+from app.services.character_profiles import supplement_characters_from_outline
 
 router = APIRouter(prefix="/api", tags=["outline"])
 logger = logging.getLogger(__name__)
@@ -162,6 +163,8 @@ async def generate_outline(project_id: int, body: OutlineGenerateRequest,
                 db_session.commit()
 
             logger.info(f"[outline] 已生成 {vol_order} 卷，共 {total_chapters} 章")
+            yield _sse("status", {"message": "正在根据大纲补充角色档案…"})
+            char_res = await supplement_characters_from_outline(db_session, project_id)
 
             # 返回完整大纲
             all_nodes = db_session.exec(
@@ -178,7 +181,13 @@ async def generate_outline(project_id: int, body: OutlineGenerateRequest,
                 }
                 for n in all_nodes
             ]
-            yield _sse("done", {"outline": result, "volumes": vol_order, "chapters": total_chapters})
+            yield _sse("done", {
+                "outline": result,
+                "volumes": vol_order,
+                "chapters": total_chapters,
+                "characters_added": char_res["created"],
+                "characters_error": char_res["error"],
+            })
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -310,6 +319,8 @@ async def expand_volume(volume_id: int, body: VolumeExpandRequest,
                 ch_order += 1
             db_session.commit()
             logger.info(f"[expand] 已插入 {ch_order} 个新章节")
+            yield _sse("status", {"message": "正在根据大纲补充角色档案…"})
+            char_res = await supplement_characters_from_outline(db_session, vol.project_id)
 
             # 返回完整大纲
             all_nodes = db_session.exec(
@@ -326,7 +337,12 @@ async def expand_volume(volume_id: int, body: VolumeExpandRequest,
                 }
                 for n in all_nodes
             ]
-            yield _sse("done", {"outline": result, "chapters_added": ch_order})
+            yield _sse("done", {
+                "outline": result,
+                "chapters_added": ch_order,
+                "characters_added": char_res["created"],
+                "characters_error": char_res["error"],
+            })
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

@@ -234,6 +234,8 @@ function parseEvent(raw, { onDelta, onDone, onError, onWordCount, onStatus, onRe
   } else if (event === 'done') {
     console.log(`[SSE] done 事件:`, data)
     onDone?.(data)
+  } else if (event === 'status') {
+    onStatus?.(data)
   } else if (event === 'error') {
     console.error(`[SSE] error 事件:`, data.message)
     onError?.(data.message || '生成出错')
@@ -244,7 +246,7 @@ function parseEvent(raw, { onDelta, onDone, onError, onWordCount, onStatus, onRe
 
 // 流式展开卷章节。回调：onDelta(text)、onDone({outline, chapters_added})、onError(msg)。
 // 返回一个 abort 函数。
-export function expandVolumeStream(volumeId, body, { onDelta, onDone, onError }) {
+export function expandVolumeStream(volumeId, body, { onDelta, onDone, onError, onStatus }) {
   const controller = new AbortController()
   console.log(`[SSE] 开始流式展开卷：volume_id=${volumeId}, body=`, body)
 
@@ -278,7 +280,7 @@ export function expandVolumeStream(volumeId, body, { onDelta, onDone, onError })
         while ((idx = buffer.indexOf('\n\n')) !== -1) {
           const rawEvent = buffer.slice(0, idx)
           buffer = buffer.slice(idx + 2)
-          parseEvent(rawEvent, { onDelta, onDone, onError }, (chars) => { totalChars += chars })
+          parseEvent(rawEvent, { onDelta, onDone, onError, onStatus }, (chars) => { totalChars += chars })
         }
       }
       console.log(`[SSE] 流式展开完成，总计 ${totalChars} 字符`)
@@ -297,7 +299,7 @@ export function expandVolumeStream(volumeId, body, { onDelta, onDone, onError })
 
 // 流式生成整体大纲。回调：onDelta(text)、onDone({outline, volumes, chapters})、onError(msg)。
 // 返回一个 abort 函数。
-export function generateOutlineStream(projectId, body, replace, force, { onDelta, onDone, onError }) {
+export function generateOutlineStream(projectId, body, replace, force, { onDelta, onDone, onError, onStatus }) {
   const controller = new AbortController()
   console.log(`[SSE] 开始流式生成大纲：project_id=${projectId}, replace=${replace}, force=${force}, body=`, body)
 
@@ -333,7 +335,7 @@ export function generateOutlineStream(projectId, body, replace, force, { onDelta
         while ((idx = buffer.indexOf('\n\n')) !== -1) {
           const rawEvent = buffer.slice(0, idx)
           buffer = buffer.slice(idx + 2)
-          parseEvent(rawEvent, { onDelta, onDone, onError }, (chars) => { totalChars += chars })
+          parseEvent(rawEvent, { onDelta, onDone, onError, onStatus }, (chars) => { totalChars += chars })
         }
       }
       console.log(`[SSE] 流式生成大纲完成，总计 ${totalChars} 字符`)

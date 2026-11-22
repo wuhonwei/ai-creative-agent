@@ -13,6 +13,13 @@ function dianwenOf(project) {
   return saved || DEFAULT_DIANWEN
 }
 
+function characterNote(data) {
+  if (data?.characters_error) return `角色档案未能补上：${data.characters_error}`
+  const names = data?.characters_added || []
+  if (!names.length) return '大纲里出现的人物都已有档案。'
+  return `已补充角色档案：${names.join('、')}。`
+}
+
 export default function OutlineView({ project, notify, sendNotification, onSaved }) {
   const [nodes, setNodes] = useState([])
   const [loading, setLoading] = useState(false)
@@ -26,6 +33,7 @@ export default function OutlineView({ project, notify, sendNotification, onSaved
   const [dianwen, setDianwen] = useState(() => dianwenOf(project))
   const [dianwenSaved, setDianwenSaved] = useState(() => dianwenOf(project))
   const [savingDianwen, setSavingDianwen] = useState(false)
+  const [phase, setPhase] = useState('')
 
   async function load() {
     try { setNodes(await api.getOutline(project.id)) }
@@ -47,6 +55,7 @@ export default function OutlineView({ project, notify, sendNotification, onSaved
     )) return
     setLoading(true)
     setBlocked(false)
+    setPhase('')
 
     let totalChars = 0
     generateOutlineStream(project.id, {
@@ -58,14 +67,17 @@ export default function OutlineView({ project, notify, sendNotification, onSaved
       onDelta: (text) => {
         totalChars += text.length
       },
+      onStatus: (s) => setPhase(s.message || ''),
       onDone: (data) => {
         setNodes(data.outline)
         setLoading(false)
+        setPhase('')
+        const added = characterNote(data)
         const msg = force
-          ? `已放弃原有正文并重建大纲：${data.volumes} 卷 ${data.chapters} 章（流式接收共 ${totalChars} 字符）。请检查后再去工作台逐章创作。`
-          : `大纲已生成：${data.volumes} 卷 ${data.chapters} 章（流式接收共 ${totalChars} 字符）。请检查后再去工作台逐章创作。`
+          ? `已放弃原有正文并重建大纲：${data.volumes} 卷 ${data.chapters} 章。${added}`
+          : `大纲已生成：${data.volumes} 卷 ${data.chapters} 章。${added}`
         notify(msg)
-        sendNotification?.('大纲生成完成', `${data.volumes} 卷 ${data.chapters} 章已生成完毕`)
+        sendNotification?.('大纲生成完成', `${data.volumes} 卷 ${data.chapters} 章。${added}`)
       },
       onError: (err) => {
         setLoading(false)
@@ -86,6 +98,7 @@ export default function OutlineView({ project, notify, sendNotification, onSaved
       + '（已写正文的章节会拦截，不受影响）。继续？'
     )) return
     setExpanding(vol.id)
+    setPhase('')
 
     let totalChars = 0
     expandVolumeStream(vol.id, {
@@ -96,14 +109,16 @@ export default function OutlineView({ project, notify, sendNotification, onSaved
     }, {
       onDelta: (text) => {
         totalChars += text.length
-        // 可以在这里显示实时进度,比如更新一个状态显示已收到多少字符
       },
+      onStatus: (s) => setPhase(s.message || ''),
       onDone: (data) => {
         setNodes(data.outline)
         setExpanding(null)
-        const msg = `「${vol.title}」的章节已展开，新增 ${data.chapters_added} 章（流式接收共 ${totalChars} 字符）。`
+        setPhase('')
+        const added = characterNote(data)
+        const msg = `「${vol.title}」的章节已展开，新增 ${data.chapters_added} 章。${added}`
         notify(msg)
-        sendNotification?.('卷章节展开完成', `「${vol.title}」新增 ${data.chapters_added} 章`)
+        sendNotification?.('卷章节展开完成', `「${vol.title}」新增 ${data.chapters_added} 章。${added}`)
       },
       onError: (msg) => {
         setExpanding(null)
@@ -159,6 +174,7 @@ export default function OutlineView({ project, notify, sendNotification, onSaved
           大体量提示：单次生成最多稳定产出约 100 章，超过会被截断。要写几百章时，
           建议「每卷章数」填 0 或较小值先生成各卷骨架，再到每一卷下点「展开本卷章节」
           逐卷细化——单卷单次生成不会截断，也能逐卷审阅。
+          生成或展开结束后，会把大纲里还没有档案的人物补进角色档案，已有角色不会改。
         </p>
         <div className="row">
           <div style={{ flex: 1 }}>
@@ -207,7 +223,7 @@ export default function OutlineView({ project, notify, sendNotification, onSaved
             </button>
           )}
           <button className="primary" onClick={() => generate(false)} disabled={loading}>
-            {loading ? '生成中…（首次可能需十几秒）' : nodes.length ? '重新生成大纲' : '生成大纲'}
+            {loading ? (phase || '生成中…（首次可能需十几秒）') : nodes.length ? '重新生成大纲' : '生成大纲'}
           </button>
         </div>
         {blocked && (
@@ -240,7 +256,7 @@ export default function OutlineView({ project, notify, sendNotification, onSaved
                 onChange={(e) => setVolCount((m) => ({ ...m, [vol.id]: e.target.value }))} />
               <button className="small primary" disabled={expanding === vol.id}
                 onClick={() => expandVolume(vol)}>
-                {expanding === vol.id ? '展开中…'
+                {expanding === vol.id ? (phase || '展开中…')
                   : chaptersOf(vol.id).length ? '重新展开本卷章节' : '展开本卷章节'}
               </button>
             </div>

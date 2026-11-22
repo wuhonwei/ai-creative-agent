@@ -879,6 +879,71 @@ def build_chapter_scene_prompt(project: dict, chapter_title: str,
     ]
 
 
+def build_supplement_characters_prompt(project: dict, existing: list[dict],
+                                       outline_text: str, dianwen: str = "") -> list[dict]:
+    """从已生成的大纲里找出还没有档案的人物，只返回需要新建的角色。"""
+    proj_lines = []
+    for k, label in [("title", "标题"), ("premise", "故事背景"), ("mood", "氛围"),
+                     ("style", "文风"), ("world_rules", "世界观规则")]:
+        v = (project.get(k) or "").strip()
+        if v:
+            proj_lines.append(f"【{label}】{v}")
+    proj_block = "\n".join(proj_lines) or "（无项目设定）"
+
+    if existing:
+        exist_lines = []
+        for c in existing:
+            line = f"- {c.get('name', '')}"
+            if c.get("role"):
+                line += f"（{c['role']}）"
+            if c.get("description"):
+                line += f"：{c['description']}"
+            exist_lines.append(line)
+        exist_block = "\n".join(exist_lines)
+    else:
+        exist_block = "（暂无）"
+
+    canon = (dianwen or "").strip()
+    canon_block = (
+        f"\n【癫文宝经】\n档案里的秘密和信息差要能支撑这些情节手法，不要把原文抄进档案：\n{canon}\n"
+        if canon else ""
+    )
+
+    user = f"""下面是一部作品的故事圣经、已有角色档案和刚生成的大纲。
+请只补充大纲里真实出场、但还没有档案的人物。
+
+{proj_block}
+
+已有角色档案（这些人不要返回，别名也算同一个人）：
+{exist_block}
+{canon_block}
+完整大纲：
+{outline_text}
+
+要求：
+1. 只写大纲里有名字或明确称谓、并且不在已有档案中的人物。
+2. 不写路人、群体、地名、组织和物品。同一人的不同称呼合并成一个最常用的名字。
+3. 不要改写已有角色，也不要编造大纲里没出现的人。没有新人就返回空数组。
+4. description 写身份、性格、和已有人物的关系，以及这个人知道而别人不知道的事。
+5. state 写这个人在大纲开场时的处境。
+
+仅输出 JSON，不要任何额外文字：
+{{
+  "characters": [
+    {{
+      "name": "姓名",
+      "role": "定位",
+      "description": "身份、性格、关系与秘密",
+      "state": "开场时的处境"
+    }}
+  ]
+}}"""
+    return [
+        {"role": "system", "content": "你是故事分析师，只根据大纲补充缺失的角色档案，只输出 JSON。"},
+        {"role": "user", "content": user},
+    ]
+
+
 def build_scan_characters_prompt(project: dict, outline_text: str,
                                  existing_names: list[str]) -> list[dict]:
     """从大纲文本扫描所有出现过的人物，提取姓名 + 档案 + 视觉锁定关键词。
