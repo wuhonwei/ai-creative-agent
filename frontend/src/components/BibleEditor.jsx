@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 
 export default function BibleEditor({ project, onSaved, notify }) {
@@ -9,7 +9,53 @@ export default function BibleEditor({ project, onSaved, notify }) {
   const [coreCount, setCoreCount] = useState('')
   const [filling, setFilling] = useState(false)
 
-  useEffect(() => { setForm(project); setIdea(''); setCoreCount('') }, [project.id])
+  useEffect(() => { setForm(project) }, [project.id])
+
+  const ideaRef = useRef(idea)
+  const countRef = useRef(coreCount)
+  const projectIdRef = useRef(null)
+  const skipSave = useRef(true)
+  ideaRef.current = idea
+  countRef.current = coreCount
+
+  function countPayload(raw) {
+    const n = Number(raw)
+    if (!Number.isFinite(n) || n <= 0) return 0
+    return Math.floor(n)
+  }
+
+  function saveDraft(id, draftIdea, draftCount) {
+    return api.updateProject(id, {
+      opening_idea: draftIdea,
+      core_character_count: countPayload(draftCount),
+    }).then(() => onSaved?.()).catch((e) => notify(e.message, true))
+  }
+
+  useEffect(() => {
+    const prevId = projectIdRef.current
+    if (prevId != null && prevId !== project.id) {
+      saveDraft(prevId, ideaRef.current, countRef.current)
+    }
+    projectIdRef.current = project.id
+    skipSave.current = true
+    const nextIdea = project.opening_idea || ''
+    const nextCount = project.core_character_count > 0 ? String(project.core_character_count) : ''
+    setIdea(nextIdea)
+    setCoreCount(nextCount)
+    ideaRef.current = nextIdea
+    countRef.current = nextCount
+  }, [project.id])
+
+  useEffect(() => {
+    if (skipSave.current) {
+      skipSave.current = false
+      return
+    }
+    const timer = setTimeout(() => {
+      saveDraft(project.id, idea, coreCount)
+    }, 400)
+    return () => clearTimeout(timer)
+  }, [idea, coreCount])
 
   useEffect(() => {
     api.listCharacters(project.id).then(setChars).catch((e) => notify(e.message, true))

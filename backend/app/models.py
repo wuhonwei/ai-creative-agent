@@ -26,10 +26,19 @@ class Project(SQLModel, table=True):
     mood: str = ""             # 整体氛围
     style: str = ""            # 文风要求（人称、节奏、参考作品等）
     world_rules: str = ""      # 世界观规则 / 设定约束
-    dianwen: str = ""          # 癫文宝经：生成大纲、填充故事圣经时参考，空则用内置默认
+    dianwen: str = ""          # 旧字段，已改为全局共用，见 AppSetting
+    opening_idea: str = ""     # 自动填充用的开头思路
+    core_character_count: int = 0  # 核心角色人数，0 表示用默认 17
     target_words: int = 0      # 目标总字数（0 表示不限）
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
+
+
+class AppSetting(SQLModel, table=True):
+    """全局设置。目前只存一份癫文宝经，所有作品共用。"""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    dianwen: str = ""
 
 
 class Character(SQLModel, table=True):

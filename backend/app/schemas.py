@@ -28,7 +28,14 @@ class ProjectUpdate(BaseModel):
     style: Optional[str] = None
     world_rules: Optional[str] = None
     dianwen: Optional[str] = None
+    opening_idea: Optional[str] = None
+    core_character_count: Optional[int] = None
     target_words: Optional[int] = None
+
+
+class SettingsUpdate(BaseModel):
+    """全局设置。癫文宝经对所有作品生效。"""
+    dianwen: Optional[str] = None
 
 
 # ---------- Character ----------

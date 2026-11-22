@@ -42,10 +42,15 @@ export default function OutlineView({ project, notify, sendNotification, onSaved
   useEffect(() => {
     load()
     setBlocked(false)
-    const text = dianwenOf(project)
-    setDianwen(text)
-    setDianwenSaved(text)
     setDianwenOpen(false)
+    let cancelled = false
+    api.getSettings().then((s) => {
+      if (cancelled) return
+      const text = (s.dianwen || '').trim() || DEFAULT_DIANWEN
+      setDianwen(text)
+      setDianwenSaved(text)
+    }).catch((e) => { if (!cancelled) notify(e.message, true) })
+    return () => { cancelled = true }
   }, [project.id])
 
   async function generate(force = false) {
@@ -143,10 +148,9 @@ export default function OutlineView({ project, notify, sendNotification, onSaved
   async function saveDianwen() {
     setSavingDianwen(true)
     try {
-      await api.updateProject(project.id, { dianwen })
+      await api.updateSettings({ dianwen })
       setDianwenSaved(dianwen)
-      notify('癫文宝经已保存')
-      onSaved?.()
+      notify('癫文宝经已保存，所有作品都会用这一份')
     } catch (e) {
       notify(e.message, true)
     } finally {
@@ -196,7 +200,7 @@ export default function OutlineView({ project, notify, sendNotification, onSaved
         {dianwenOpen && (
           <div className="dianwen-box">
             <p className="hint" style={{ marginTop: 0 }}>
-              通用情节原则，由多条想法组成。生成大纲、展开本卷章节时会参考这里的文本。正文写作不使用。
+              所有作品共用这一份。在这里保存后，打开其他作品看到的也是改过的内容。生成大纲和展开本卷章节时会参考。
             </p>
             <textarea rows={6} value={dianwen}
               onChange={(e) => setDianwen(e.target.value)} />

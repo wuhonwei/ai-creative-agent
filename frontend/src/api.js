@@ -39,6 +39,9 @@ export const api = {
   getProject: (id) => req(`/projects/${id}`),
   updateProject: (id, body) =>
     req(`/projects/${id}`, { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(body) }),
+  getSettings: () => req('/settings'),
+  updateSettings: (body) =>
+    req('/settings', { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(body) }),
   autofillBible: (id, body) =>
     req(`/projects/${id}/bible/autofill`, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) }),
   deleteProject: (id) => req(`/projects/${id}`, { method: 'DELETE' }),

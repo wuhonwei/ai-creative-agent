@@ -13,8 +13,9 @@ from app.models import (
 )
 from app.schemas import (
     BibleAutofillRequest, CharacterCreate, CharacterUpdate, ProjectCreate,
-    ProjectUpdate,
+    ProjectUpdate, SettingsUpdate,
 )
+from app.services.app_settings import get_dianwen, save_dianwen
 from app.services.generation import _extract_json
 
 router = APIRouter(prefix="/api", tags=["projects"])
@@ -22,6 +23,18 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------- Projects ----------------
+@router.get("/settings")
+def read_settings(session: Session = Depends(get_session)):
+    return {"dianwen": get_dianwen(session)}
+
+
+@router.patch("/settings")
+def update_settings(body: SettingsUpdate, session: Session = Depends(get_session)):
+    if body.dianwen is not None:
+        save_dianwen(session, body.dianwen)
+    return {"dianwen": get_dianwen(session)}
+
+
 @router.get("/projects")
 def list_projects(session: Session = Depends(get_session)):
     return session.exec(select(Project).order_by(Project.updated_at.desc())).all()
@@ -50,9 +63,12 @@ def update_project(project_id: int, body: ProjectUpdate,
     project = session.get(Project, project_id)
     if not project:
         raise HTTPException(404, "项目不存在")
-    for k, v in body.model_dump(exclude_unset=True).items():
+    data = body.model_dump(exclude_unset=True)
+    for k, v in data.items():
         setattr(project, k, v)
-    project.updated_at = datetime.utcnow()
+    # 开头思路和人数是边写边存的草稿，不把作品顶到列表最前。
+    if set(data) - {"opening_idea", "core_character_count"}:
+        project.updated_at = datetime.utcnow()
     session.add(project)
     session.commit()
     session.refresh(project)
@@ -91,7 +107,7 @@ async def autofill_bible(project_id: int, body: BibleAutofillRequest,
             409, "已有故事圣经或角色档案。确认后将覆盖这些内容，并删除现有角色的形象设定。"
         )
 
-    dianwen = prompts.resolve_dianwen(None, project.dianwen)
+    dianwen = prompts.resolve_dianwen(None, get_dianwen(session))
     count = body.core_character_count if body.core_character_count and body.core_character_count > 0 else 17
     msgs = prompts.build_bible_fill_prompt(idea, project.title, dianwen, count)
     try:

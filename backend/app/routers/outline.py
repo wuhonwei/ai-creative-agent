@@ -14,6 +14,7 @@ from app.schemas import (
     VolumeExpandRequest,
 )
 from app.services import context_builder, generation
+from app.services.app_settings import get_dianwen
 from app.services.character_profiles import supplement_characters_from_outline
 
 router = APIRouter(prefix="/api", tags=["outline"])
@@ -64,7 +65,7 @@ async def generate_outline(project_id: int, body: OutlineGenerateRequest,
             )
 
     characters = context_builder.characters_to_dicts(session, project_id)
-    dianwen = prompts.resolve_dianwen(body.dianwen, project.dianwen)
+    dianwen = prompts.resolve_dianwen(body.dianwen, get_dianwen(session))
     msgs = prompts.build_outline_prompt(
         context_builder.project_to_dict(project), characters,
         body.instruction, body.num_volumes, body.chapters_per_volume,
@@ -257,7 +258,7 @@ async def expand_volume(volume_id: int, body: VolumeExpandRequest,
             })
 
     characters = context_builder.characters_to_dicts(session, volume.project_id)
-    dianwen = prompts.resolve_dianwen(body.dianwen, project.dianwen)
+    dianwen = prompts.resolve_dianwen(body.dianwen, get_dianwen(session))
     msgs = prompts.build_volume_chapters_prompt(
         context_builder.project_to_dict(project), characters,
         all_volumes, {"title": volume.title, "synopsis": volume.synopsis},

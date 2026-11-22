@@ -5,6 +5,7 @@ from sqlmodel import Session, select
 
 from app.llm import client, prompts
 from app.models import Character, Project
+from app.services.app_settings import get_dianwen
 from app.services.character_design import _build_outline_text
 from app.services.generation import _extract_json
 
@@ -33,7 +34,7 @@ async def supplement_characters_from_outline(session: Session, project_id: int) 
         {"name": c.name, "role": c.role, "description": (c.description or "")[:120]}
         for c in existing if c.name and c.name.strip()
     ]
-    dianwen = prompts.resolve_dianwen(None, project.dianwen)
+    dianwen = prompts.resolve_dianwen(None, get_dianwen(session))
     msgs = prompts.build_supplement_characters_prompt(
         {
             "title": project.title,
