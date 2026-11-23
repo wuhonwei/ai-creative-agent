@@ -179,7 +179,7 @@ export default function OutlineView({ project, notify, sendNotification, onSaved
           建议「每卷章数」填 0 或较小值先生成各卷骨架，再到每一卷下点「展开本卷章节」
           逐卷细化——单卷单次生成不会截断，也能逐卷审阅。
           生成或展开结束后，会把大纲里还没有档案的人物补进角色档案，已有角色不会改。
-          每一章的梗概不少于 100 字。
+          每一章的梗概不少于 100 字，只写情节提要，不写对白和场景细节。
         </p>
         <div className="row">
           <div style={{ flex: 1 }}>

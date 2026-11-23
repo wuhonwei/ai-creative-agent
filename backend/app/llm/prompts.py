@@ -20,6 +20,21 @@ SYSTEM_WRITER = (
     "惜字如金，每句话都要推进情节、揭示人物或渲染氛围，禁止废话与重复阐释。"
 )
 
+SYSTEM_OUTLINE = (
+    "你是故事架构师，只负责分层大纲。"
+    "章概要是给作者看的情节提要，不是小说正文。"
+    "不写对白、连续动作、神态和感官细节。"
+    "严格遵守已有设定，不推翻既有剧情，只输出要求的 JSON。"
+)
+
+CHAPTER_SYNOPSIS_RULE = (
+    "章概要是情节提要，不是正文，也不是分镜。\n"
+    "用概括句写清：本章发生哪几件事、人物关系或信息因此怎么变化、章末留下什么悬念。\n"
+    "不少于 100 字。字数用来把事件和因果写全，不要用来铺陈场景。\n"
+    "禁止对话原句、动作分解和感官特写，例如不要写“她猛地缩回脚，嘶声说不用你，湿帕子贴着脚踝”。\n"
+    "要写成“阮千媚停止让妹妹服侍，阮梦却不相信她真的变了；同时她确认家财将尽，还不知道如何证明自己”。"
+)
+
 # 方案2：生成时预防 AI 写作痕迹（精简版，完整规则留给生成后 humanize）
 HUMANIZER_PREVENTION_RULES = """
 7. **去 AI 味（写作时即遵守）**：
@@ -242,20 +257,21 @@ def build_lengthen_synopses_prompt(chapters: list[dict]) -> list[dict]:
             f"{ch['index']}. {ch.get('title') or '未命名'}\n现有梗概：{ch.get('synopsis') or '（空）'}"
         )
     body = "\n\n".join(lines)
-    user = f"""下面这些章节梗概不足 100 字。请逐章改写，每章梗概不少于 100 字。
-保持原有事件、人物和顺序，不要另起一条情节，不要改标题。
-写清这一章里谁做了什么、冲突怎么推进、章末留下什么缺口。
+    user = f"""下面这些章节梗概不足 100 字。请逐章改写成情节提要，每章不少于 100 字。
+保持原有事件、人物和顺序，不要另起情节，不要改标题。
+补的是还没写明的因果和章末悬念，不要扩成场景。
+{CHAPTER_SYNOPSIS_RULE}
 
 {body}
 
 仅输出 JSON，不要任何额外文字：
 {{
   "chapters": [
-    {{"index": 0, "synopsis": "不少于100字的梗概"}}
+    {{"index": 0, "synopsis": "不少于100字的情节提要，不写对白和场景细节"}}
   ]
 }}"""
     return [
-        {"role": "system", "content": "你是故事架构师，只把过短的章节梗概补写到不少于100字，只输出 JSON。"},
+        {"role": "system", "content": SYSTEM_OUTLINE},
         {"role": "user", "content": user},
     ]
 
@@ -285,9 +301,9 @@ def build_outline_prompt(project: dict, characters: list[dict],
 {_dianwen_block(dianwen)}
 要求：
 1. 先给出"卷"级结构，每卷一句主题。
-2. 每卷下给出若干"章"，每章有简短标题，梗概不少于 100 字。
-   梗概要写清本章的关键事件、人物做了什么、冲突怎么推进、留下什么缺口。不要用一两句话带过。
-3. 章节梗概要能串联成有张力的主线，并为后续埋下伏笔。每章梗概都不得少于 100 字。
+2. 每章有简短标题。章概要遵守下面的写法，每章都不得少于 100 字。
+{CHAPTER_SYNOPSIS_RULE}
+3. 各章提要要能串联成有张力的主线，并为后续埋下伏笔。
 
 仅输出 JSON，不要任何额外文字，格式如下：
 {{
@@ -296,13 +312,13 @@ def build_outline_prompt(project: dict, characters: list[dict],
       "title": "第一卷 卷名",
       "synopsis": "本卷主题",
       "chapters": [
-        {{"title": "第1章 章名", "synopsis": "不少于100字，写清本章事件、人物行动、冲突推进和留下的缺口"}}
+        {{"title": "第1章 章名", "synopsis": "不少于100字的情节提要，只写事件、变化和悬念"}}
       ]
     }}
   ]
 }}"""
     return [
-        {"role": "system", "content": SYSTEM_WRITER},
+        {"role": "system", "content": SYSTEM_OUTLINE},
         {"role": "user", "content": user},
     ]
 
@@ -358,17 +374,18 @@ def build_volume_chapters_prompt(project: dict, characters: list[dict],
 要求：
 1. 参考后续各卷的主题,合理控制本卷节奏、埋设伏笔,但本卷章节只写本卷主题范围内的事件,不要把后续卷的核心冲突或高潮提前写进本卷。
 2. 严格承接前面各卷已发生的剧情,人物状态、事件顺序、伏笔呼应要与前文一致,不能出现矛盾。
-3. 每章有简短标题，梗概不少于 100 字，写清关键事件、人物行动、冲突推进、埋下或回收的伏笔。不要用一两句话带过。
+3. 每章有简短标题。章概要遵守下面的写法，每章都不得少于 100 字。
+{CHAPTER_SYNOPSIS_RULE}
 4. 只输出本卷的章节,不要输出其它卷的内容。
 
 仅输出 JSON，不要任何额外文字，格式如下：
 {{
   "chapters": [
-    {{"title": "第1章 章名", "synopsis": "不少于100字，写清本章事件、人物行动、冲突推进和留下的缺口"}}
+    {{"title": "第1章 章名", "synopsis": "不少于100字的情节提要，只写事件、变化和悬念"}}
   ]
 }}"""
     return [
-        {"role": "system", "content": SYSTEM_WRITER},
+        {"role": "system", "content": SYSTEM_OUTLINE},
         {"role": "user", "content": user},
     ]
 def build_chapter_prompt(project: dict, characters: list[dict],
