@@ -11,6 +11,7 @@ class ProjectCreate(BaseModel):
     mood: str = ""
     style: str = ""
     world_rules: str = ""
+    full_synopsis: str = ""
     target_words: int = 0
 
 
@@ -27,6 +28,7 @@ class ProjectUpdate(BaseModel):
     mood: Optional[str] = None
     style: Optional[str] = None
     world_rules: Optional[str] = None
+    full_synopsis: Optional[str] = None
     dianwen: Optional[str] = None
     opening_idea: Optional[str] = None
     core_character_count: Optional[int] = None

@@ -75,7 +75,7 @@ export default function BibleEditor({ project, onSaved, notify }) {
       notify('先写下开头思路', true)
       return
     }
-    const hasContent = ['premise', 'mood', 'style', 'world_rules'].some((k) => (form[k] || '').trim())
+    const hasContent = ['premise', 'mood', 'style', 'world_rules', 'full_synopsis'].some((k) => (form[k] || '').trim())
       || chars.length > 0
     if (hasContent && !replace && !confirm(
       '已有故事圣经或角色档案。自动填充会覆盖这些内容，并删除现有角色的形象设定。继续？'
@@ -105,6 +105,7 @@ export default function BibleEditor({ project, onSaved, notify }) {
       await api.updateProject(project.id, {
         title: form.title, premise: form.premise, mood: form.mood,
         style: form.style, world_rules: form.world_rules,
+        full_synopsis: form.full_synopsis,
         target_words: Number(form.target_words) || 0,
       })
       notify('故事圣经已保存')
@@ -164,7 +165,7 @@ export default function BibleEditor({ project, onSaved, notify }) {
           </button>
         </div>
         <p className="hint">
-          不填核心角色人数时按 17 人生成。填充时会参考这部作品的癫文宝经。已有圣经或角色时，会先确认再覆盖。
+          不填核心角色人数时按 17 人生成。填充时会参考癫文宝经，并写出全文概述。已有圣经或角色时，会先确认再覆盖。
         </p>
         <label>作品标题</label>
         <input value={form.title || ''} onChange={(e) => set('title', e.target.value)} />
@@ -188,6 +189,12 @@ export default function BibleEditor({ project, onSaved, notify }) {
         <textarea rows={3} value={form.world_rules || ''}
           placeholder="力量体系、社会结构、不可违背的设定红线……"
           onChange={(e) => set('world_rules', e.target.value)} />
+
+        <label>全文概述</label>
+        <textarea rows={8} value={form.full_synopsis || ''}
+          placeholder="全书情节概述：开端、转折、读者会猜错的结局和实际结局。生成大纲时会用到。"
+          onChange={(e) => set('full_synopsis', e.target.value)} />
+        <p className="hint">这篇概述只在生成大纲和展开卷章节时提供给模型，不会进入正文写作。</p>
 
         <label>目标总字数（选填，0=不限）</label>
         <input type="number" value={form.target_words || 0}

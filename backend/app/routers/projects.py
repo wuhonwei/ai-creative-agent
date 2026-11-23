@@ -100,7 +100,7 @@ async def autofill_bible(project_id: int, body: BibleAutofillRequest,
     ).all()
     has_bible = any(
         (getattr(project, key) or "").strip()
-        for key in ("premise", "mood", "style", "world_rules")
+        for key in ("premise", "mood", "style", "world_rules", "full_synopsis")
     )
     if (has_bible or existing) and not body.replace:
         raise HTTPException(
@@ -125,8 +125,11 @@ async def autofill_bible(project_id: int, body: BibleAutofillRequest,
     mood = _as_text(parsed.get("mood"))
     style = _as_text(parsed.get("style"))
     world_rules = _as_text(parsed.get("world_rules"))
+    full_synopsis = _as_text(parsed.get("full_synopsis"))
     if not premise:
         raise HTTPException(502, "模型未写好故事背景，请换个开头思路再试")
+    if not full_synopsis:
+        raise HTTPException(502, "模型未写好全文概述，请再试一次")
 
     new_characters: list[Character] = []
     for item in parsed.get("characters") or []:
@@ -148,6 +151,7 @@ async def autofill_bible(project_id: int, body: BibleAutofillRequest,
     project.mood = mood
     project.style = style
     project.world_rules = world_rules
+    project.full_synopsis = full_synopsis
     new_title = _as_text(parsed.get("title"))
     if new_title and project.title.strip() in ("", "未命名作品"):
         project.title = new_title

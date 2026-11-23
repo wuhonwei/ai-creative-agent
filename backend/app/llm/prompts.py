@@ -143,11 +143,13 @@ def _strip_model_fences(text: str) -> str:
     return t.strip()
 
 
-def _bible_block(project: dict, characters: list[dict], include_state: bool = True) -> str:
+def _bible_block(project: dict, characters: list[dict], include_state: bool = True,
+                 include_overview: bool = False) -> str:
     """把故事圣经 + 角色设定拼成上下文块。
 
     include_state：正文写作要带上随剧情更新的当前状态。
     生成大纲时关掉，避免把尚未发生的状态写进卷章情节。
+    include_overview：只有生成大纲时带上全文概述，正文写作不带。
     """
     lines = ["【故事圣经】"]
     lines.append(f"标题：{project.get('title', '')}")
@@ -159,6 +161,9 @@ def _bible_block(project: dict, characters: list[dict], include_state: bool = Tr
         lines.append(f"文风要求：{project['style']}")
     if project.get("world_rules"):
         lines.append(f"世界观规则：{project['world_rules']}")
+    if include_overview and (project.get("full_synopsis") or "").strip():
+        lines.append(f"全文概述：{project['full_synopsis'].strip()}")
+        lines.append("大纲要沿着这篇全文概述推进。不到终卷，不要在章节梗概里写明结局。")
 
     if characters:
         lines.append("\n【角色档案】")
@@ -215,22 +220,25 @@ def build_bible_fill_prompt(idea: str, title: str, dianwen: str,
 {idea.strip()}
 
 【癫文宝经】
-填充故事圣经和角色档案时参考下面这些通用情节原则。
+填充故事圣经、全文概述和角色档案时参考下面这些通用情节原则。
 设定要能支撑这些手法：读者没想过的下一步、人物之间的信息差、不到尾声就猜不中结局、爽点与反差。
-不要把原则原文抄进字段，也不要写明结局。
+不要把原则原文抄进字段。结局只写在 full_synopsis 里，不要写进 premise。
 {canon}
 
-请把开头思路展开成可直接开写的故事圣经和角色档案。要求：
-1. premise 写清时代、世界、核心冲突，以及故事从哪个人、哪件事开始。留下后文才能揭开的缺口。
+请把开头思路展开成可直接开写的故事圣经、全文概述和角色档案。要求：
+1. premise 写清时代、世界、核心冲突，以及故事从哪个人、哪件事开始。留下后文才能揭开的缺口，不要写明结局。
 2. mood 用简短的词写出整体氛围。
 3. style 写人称、节奏和语言风格。
 4. world_rules 写这个世界不能打破的规则。
-5. characters 正好写 {count} 个核心角色，包含主角和对手。每人有姓名、定位、性格与秘密。
+5. full_synopsis 写 400 到 800 字的全书情节概述，供之后生成大纲使用。
+   用概括句写开端、几次关键转折、读者按常理会猜到的结局、实际结局，以及主要的信息差和反差。
+   不写对白，不写场景细节。结局要写清楚，因为这是给作者看的。
+6. characters 正好写 {count} 个核心角色，包含主角和对手。每人有姓名、定位、性格与秘密。
    人数必须是 {count}，不要少写，也不要多写。description 每人两三句，避免输出被截断。
    至少有一对人物：一方知道的关键信息，另一方不知道。
    角色之间要有能形成反差的身份或关系。
    不要写角色的当前状态，也不要写开场这一刻正在做什么。状态要等正文确认后才更新。
-6. title：暂定标题如果是「未命名作品」或过空，另起一个贴切书名；否则沿用暂定标题。
+7. title：暂定标题如果是「未命名作品」或过空，另起一个贴切书名；否则沿用暂定标题。
 
 仅输出 JSON，不要任何额外文字：
 {{
@@ -239,6 +247,7 @@ def build_bible_fill_prompt(idea: str, title: str, dianwen: str,
   "mood": "氛围",
   "style": "文风",
   "world_rules": "规则",
+  "full_synopsis": "400到800字的全书情节概述",
   "characters": [
     {{"name": "姓名", "role": "定位", "description": "性格、欲望与秘密"}}
   ]
@@ -283,7 +292,7 @@ def build_outline_prompt(project: dict, characters: list[dict],
                          instruction: str = "", num_volumes: int = 0,
                          chapters_per_volume: int = 0,
                          dianwen: str = "") -> list[dict]:
-    bible = _bible_block(project, characters, include_state=False)
+    bible = _bible_block(project, characters, include_state=False, include_overview=True)
 
     scale = ""
     if num_volumes:
@@ -303,7 +312,7 @@ def build_outline_prompt(project: dict, characters: list[dict],
 1. 先给出"卷"级结构，每卷一句主题。
 2. 每章有简短标题。章概要遵守下面的写法，每章都不得少于 100 字。
 {CHAPTER_SYNOPSIS_RULE}
-3. 各章提要要能串联成有张力的主线，并为后续埋下伏笔。
+3. 各章提要要能串联成有张力的主线，并为后续埋下伏笔。若有全文概述，卷章走向要和它一致，不到终卷不要把结局写进章节梗概。
 
 仅输出 JSON，不要任何额外文字，格式如下：
 {{
@@ -337,7 +346,7 @@ def build_volume_chapters_prompt(project: dict, characters: list[dict],
     count：本卷目标章数（0 = 由模型决定）。
     单卷单次生成，章数可控，避免一次性生成全书章节导致 JSON 截断。
     """
-    bible = _bible_block(project, characters, include_state=False)
+    bible = _bible_block(project, characters, include_state=False, include_overview=True)
 
     arc_lines = ["【全书卷结构（把握整体走向、控制节奏、合理埋伏笔）】"]
     for i, v in enumerate(all_volumes, 1):

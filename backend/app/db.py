@@ -25,6 +25,7 @@ _COLUMN_MIGRATIONS = {
         "dianwen": "TEXT NOT NULL DEFAULT ''",
         "opening_idea": "TEXT NOT NULL DEFAULT ''",
         "core_character_count": "INTEGER NOT NULL DEFAULT 0",
+        "full_synopsis": "TEXT NOT NULL DEFAULT ''",
     },
     "shot": {
         "shot_size": "TEXT NOT NULL DEFAULT ''",

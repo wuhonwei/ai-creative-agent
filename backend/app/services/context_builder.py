@@ -23,6 +23,7 @@ def project_to_dict(project: Project) -> dict:
         "mood": project.mood,
         "style": project.style,
         "world_rules": project.world_rules,
+        "full_synopsis": project.full_synopsis,
     }
 
 

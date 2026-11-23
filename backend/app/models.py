@@ -26,6 +26,7 @@ class Project(SQLModel, table=True):
     mood: str = ""             # 整体氛围
     style: str = ""            # 文风要求（人称、节奏、参考作品等）
     world_rules: str = ""      # 世界观规则 / 设定约束
+    full_synopsis: str = ""    # 全文概述，供生成大纲使用
     dianwen: str = ""          # 旧字段，已改为全局共用，见 AppSetting
     opening_idea: str = ""     # 自动填充用的开头思路
     core_character_count: int = 0  # 核心角色人数，0 表示用默认 17
