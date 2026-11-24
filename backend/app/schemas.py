@@ -35,6 +35,15 @@ class ProjectUpdate(BaseModel):
     target_words: Optional[int] = None
 
 
+class PlotOptionsRequest(BaseModel):
+    """按开头思路生成三个后续剧情方向。"""
+    idea: str
+
+
+class PlotChooseRequest(BaseModel):
+    option_id: int
+
+
 class SettingsUpdate(BaseModel):
     """全局设置。癫文宝经对所有作品生效。"""
     dianwen: Optional[str] = None

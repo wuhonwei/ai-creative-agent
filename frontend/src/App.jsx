@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react'
 import { api } from './api'
 import BibleEditor from './components/BibleEditor'
+import PlotDecisions from './components/PlotDecisions'
 import OutlineView from './components/OutlineView'
 import ChapterWorkspace from './components/ChapterWorkspace'
 import AssetsView from './components/AssetsView'
@@ -132,6 +133,7 @@ export default function App() {
             <div className="tabs">
               {[
                 ['bible', '📖 故事圣经'],
+                ['decisions', '🔀 剧情决策'],
                 ['outline', '🗂 大纲'],
                 ['workspace', '✍️ 创作工作台'],
                 ['assets', '🎨 素材库'],
@@ -154,6 +156,9 @@ export default function App() {
                   onSaved={loadProjects}
                   notify={notify}
                 />
+              )}
+              {tab === 'decisions' && (
+                <PlotDecisions project={active} onSaved={loadProjects} notify={notify} />
               )}
               {tab === 'outline' && (
                 <OutlineView

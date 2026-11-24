@@ -8,7 +8,7 @@ from app.config import settings
 from app.db import init_db
 from app.routers import (
     assets, chapters, character_refs, custom_voices, export, generate, outline,
-    projects, scenes, storyboard, videos,
+    plot_decisions, projects, scenes, storyboard, videos,
 )
 
 
@@ -29,6 +29,7 @@ app.add_middleware(
 )
 
 app.include_router(projects.router)
+app.include_router(plot_decisions.router)
 app.include_router(outline.router)
 app.include_router(chapters.router)
 app.include_router(generate.router)

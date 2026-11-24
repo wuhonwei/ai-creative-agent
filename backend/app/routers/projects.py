@@ -9,7 +9,7 @@ from app.db import get_session
 from app.llm import client, prompts
 from app.models import (
     Chapter, Character, CharacterDesign, CharacterRefImage, OutlineNode,
-    PlotThread, Project,
+    PlotDecision, PlotThread, Project,
 )
 from app.schemas import (
     BibleAutofillRequest, CharacterCreate, CharacterUpdate, ProjectCreate,
@@ -184,7 +184,7 @@ def delete_project(project_id: int, session: Session = Depends(get_session)):
     if not project:
         raise HTTPException(404, "项目不存在")
     # 级联删除关联数据
-    for model in (Chapter, OutlineNode, Character, PlotThread):
+    for model in (Chapter, OutlineNode, Character, PlotThread, PlotDecision):
         for row in session.exec(
             select(model).where(model.project_id == project_id)
         ).all():

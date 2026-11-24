@@ -151,6 +151,15 @@ label { display: block; margin: 10px 0 4px; color: var(--muted); font-size: 12px
 .streaming-cursor::after { content: '▍'; color: var(--accent); animation: blink 1s steps(2) infinite; }
 @keyframes blink { 0%,50% { opacity: 1; } 50.01%,100% { opacity: 0; } }
 
+.decision-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-top: 14px; }
+.decision-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 10px; background: var(--panel-2); }
+.decision-card h3 { margin: 0 0 8px; font-size: 14px; }
+.decision-card p { margin: 0 0 8px; }
+.decision-label { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.decision-label.good { color: var(--green); }
+.decision-label.bad { color: var(--amber); }
+.decision-card.chosen { background: transparent; }
+
 .char-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 10px; }
 .char-card .name { font-weight: 600; }
 .char-card .state { color: var(--amber); font-size: 12px; margin-top: 4px; }

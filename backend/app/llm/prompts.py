@@ -258,6 +258,56 @@ def build_bible_fill_prompt(idea: str, title: str, dianwen: str,
     ]
 
 
+def build_plot_options_prompt(idea: str, decisions: list[dict], dianwen: str) -> list[dict]:
+    """基于开头思路、已选决策和癫文宝经，给出三个不同方向。"""
+    canon = (dianwen or "").strip() or DEFAULT_DIANWEN
+    if decisions:
+        history = "\n".join(
+            f"{i}. {item.get('title') or '未命名'}\n"
+            f"剧情：{item.get('plot') or ''}\n"
+            f"新人物：{item.get('new_characters') or '无'}\n"
+            f"新势力：{item.get('new_factions') or '无'}"
+            for i, item in enumerate(decisions, 1)
+        )
+    else:
+        history = "（还没有已选决策，这是从开头往下的第一步）"
+    user = f"""【用户的开头或思路】
+{idea.strip()}
+
+【已经选定的剧情决策，必须全部承接，不能推翻】
+{history}
+
+【癫文宝经】
+下面是通用情节原则。三个方向都要能用上其中的手法：读者没想过的下一步、人物之间的信息差、不到尾声猜不中结局、爽点与反差。
+不要把原则原文抄进选项。
+{canon}
+
+请给出三个后续剧情方向。要求：
+1. 三个方向必须分叉，不能是同一件事的三种说法。
+2. 每个方向都要有新人物或新势力登场，写出名字和他们为何此时出现。三份登场名单不要相同。
+3. plot 用 150 到 260 字的情节提要，写清这一步发生什么、局面怎么变、留下什么悬念。不写对白，不写场景细节。
+4. merits 写这个方向的优点，drawbacks 写缺点。都要具体，对着信息差、悬念、反差和后续空间说，不要写空话。
+5. 只续写下一步，不要把结局写完。
+
+仅输出 JSON，不要任何额外文字：
+{{
+  "options": [
+    {{
+      "title": "方向名称",
+      "plot": "150到260字的情节提要",
+      "new_characters": "新人物及为何登场",
+      "new_factions": "新势力及为何登场",
+      "merits": "优点",
+      "drawbacks": "缺点"
+    }}
+  ]
+}}"""
+    return [
+        {"role": "system", "content": SYSTEM_OUTLINE},
+        {"role": "user", "content": user},
+    ]
+
+
 def build_lengthen_synopses_prompt(chapters: list[dict]) -> list[dict]:
     """把过短的章节梗概补到不少于 100 字，事件保持原样。"""
     lines = []

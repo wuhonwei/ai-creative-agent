@@ -44,6 +44,12 @@ export const api = {
     req('/settings', { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(body) }),
   autofillBible: (id, body) =>
     req(`/projects/${id}/bible/autofill`, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) }),
+  listPlotDecisions: (id) => req(`/projects/${id}/plot-decisions`),
+  generatePlotOptions: (id, body) =>
+    req(`/projects/${id}/plot-decisions/options`, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) }),
+  choosePlotOption: (id, optionId) =>
+    req(`/projects/${id}/plot-decisions/choose`, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ option_id: optionId }) }),
+  undoPlotDecision: (id) => req(`/projects/${id}/plot-decisions/latest`, { method: 'DELETE' }),
   deleteProject: (id) => req(`/projects/${id}`, { method: 'DELETE' }),
 
   // Characters

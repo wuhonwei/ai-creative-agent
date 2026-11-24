@@ -299,3 +299,19 @@ class Video(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
 
+
+class PlotDecision(SQLModel, table=True):
+    """剧情决策。chosen 是已选链路，candidate 是当前待选的三个方向。"""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(foreign_key="project.id", index=True)
+    status: str = "candidate"  # candidate | chosen
+    order_index: int = 0
+    title: str = ""
+    plot: str = ""
+    new_characters: str = ""
+    new_factions: str = ""
+    merits: str = ""
+    drawbacks: str = ""
+    created_at: datetime = Field(default_factory=_now)
+
