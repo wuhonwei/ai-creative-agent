@@ -26,6 +26,8 @@ _COLUMN_MIGRATIONS = {
         "opening_idea": "TEXT NOT NULL DEFAULT ''",
         "core_character_count": "INTEGER NOT NULL DEFAULT 0",
         "full_synopsis": "TEXT NOT NULL DEFAULT ''",
+        "plot_decision_digest": "TEXT NOT NULL DEFAULT ''",
+        "plot_decision_digest_through": "INTEGER NOT NULL DEFAULT 0",
     },
     "shot": {
         "shot_size": "TEXT NOT NULL DEFAULT ''",

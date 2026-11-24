@@ -15,6 +15,8 @@ router = APIRouter(prefix="/api", tags=["plot-decisions"])
 logger = logging.getLogger(__name__)
 
 _EMPTY = {"无", "没有", "暂无", "无。", "没有新人物", "没有新势力"}
+RECENT_FULL = 12
+FOLD_BATCH = 4
 
 
 def _text(value) -> str:
@@ -82,6 +84,51 @@ def _parse_options(raw: str) -> list[dict]:
     return options
 
 
+def _decision_dict(row: PlotDecision) -> dict:
+    return {
+        "order_index": row.order_index,
+        "title": row.title,
+        "plot": row.plot,
+        "new_characters": row.new_characters,
+        "new_factions": row.new_factions,
+    }
+
+
+def _split_history(chosen: list[PlotDecision], digest_through: int):
+    """最近若干步保留全文；更早的步骤能摘要的摘要，摘要还没跟上的仍带原文。"""
+    if len(chosen) <= RECENT_FULL:
+        return [], [], list(chosen)
+    earlier = list(chosen[:-RECENT_FULL])
+    recent = list(chosen[-RECENT_FULL:])
+    pending = [row for row in earlier if row.order_index > digest_through]
+    return earlier, pending, recent
+
+
+async def _refresh_digest(project: Project, pending: list[PlotDecision]) -> str:
+    """每积够一批较早决策，就并入一段情节摘要。失败时沿用旧摘要，原文仍会送进下一步。"""
+    if len(pending) < FOLD_BATCH:
+        return project.plot_decision_digest or ""
+    covered = pending[:FOLD_BATCH]
+    try:
+        text = await client.chat(
+            prompts.build_decision_digest_prompt(
+                project.plot_decision_digest or "",
+                [_decision_dict(row) for row in covered],
+            ),
+            temperature=0.3,
+            max_tokens=16384,
+        )
+    except client.LLMError as e:
+        logger.error("[plot] 较早决策摘要失败：%s", e)
+        return project.plot_decision_digest or ""
+    digest = (text or "").strip()
+    if not digest:
+        return project.plot_decision_digest or ""
+    project.plot_decision_digest = digest
+    project.plot_decision_digest_through = covered[-1].order_index
+    return digest
+
+
 @router.get("/projects/{project_id}/plot-decisions")
 def list_plot_decisions(project_id: int, session: Session = Depends(get_session)):
     if not session.get(Project, project_id):
@@ -101,22 +148,27 @@ async def generate_plot_options(project_id: int, body: PlotOptionsRequest,
         raise HTTPException(404, "项目不存在")
 
     chosen = _chosen(session, project_id)
-    history = [
-        {
-            "title": row.title,
-            "plot": row.plot,
-            "new_characters": row.new_characters,
-            "new_factions": row.new_factions,
-        }
-        for row in chosen
-    ]
+    _earlier, pending, recent = _split_history(
+        chosen, project.plot_decision_digest_through or 0
+    )
+    digest = await _refresh_digest(project, pending)
+    session.add(project)
+    session.commit()
+    through = project.plot_decision_digest_through or 0
+    if through:
+        pending = [row for row in pending if row.order_index > through]
     dianwen = prompts.resolve_dianwen(None, get_dianwen(session))
+    messages = prompts.build_plot_options_prompt(
+        idea,
+        [_decision_dict(row) for row in recent],
+        dianwen,
+        roster=[_decision_dict(row) for row in chosen],
+        earlier_digest=digest,
+        pending_earlier=[_decision_dict(row) for row in pending],
+    )
+    budget = client.output_token_budget(sum(len(m.get("content") or "") for m in messages))
     try:
-        raw = await client.chat(
-            prompts.build_plot_options_prompt(idea, history, dianwen),
-            temperature=0.9,
-            max_tokens=32768,
-        )
+        raw = await client.chat(messages, temperature=0.9, max_tokens=budget)
     except client.LLMError as e:
         raise HTTPException(502, str(e)) from e
 
@@ -164,7 +216,13 @@ def undo_latest_decision(project_id: int, session: Session = Depends(get_session
     chosen = _chosen(session, project_id)
     if not chosen:
         raise HTTPException(400, "还没有已选决策")
-    session.delete(chosen[-1])
+    project = session.get(Project, project_id)
+    removed = chosen[-1]
+    if (project.plot_decision_digest_through or 0) >= removed.order_index:
+        project.plot_decision_digest = ""
+        project.plot_decision_digest_through = 0
+        session.add(project)
+    session.delete(removed)
     for row in _candidates(session, project_id):
         session.delete(row)
     session.commit()

@@ -33,6 +33,9 @@ class Settings(BaseSettings):
 
     llm_temperature: float = 0.85
     llm_max_tokens: int = 16384
+    # deepseek-v4-pro：上下文 1M（含输入和输出），单次输出上限 384K。
+    llm_context_tokens: int = 1_048_576
+    llm_max_output_tokens: int = 393_216
 
     # 每章目标字数（引导模型，软约束，不设上限）
     chapter_target_words: int = 2000

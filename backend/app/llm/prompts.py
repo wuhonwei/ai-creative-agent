@@ -258,24 +258,53 @@ def build_bible_fill_prompt(idea: str, title: str, dianwen: str,
     ]
 
 
-def build_plot_options_prompt(idea: str, decisions: list[dict], dianwen: str) -> list[dict]:
-    """基于开头思路、已选决策和癫文宝经，给出三个不同方向。"""
+def build_plot_options_prompt(idea: str, recent: list[dict], dianwen: str,
+                              roster: list[dict] | None = None,
+                              earlier_digest: str = "",
+                              pending_earlier: list[dict] | None = None) -> list[dict]:
+    """基于开头思路、已选决策和癫文宝经，给出三个不同方向。
+
+    recent 是最近若干步的全文。更早的情节可以放在 earlier_digest，
+    尚未收进摘要的较早步骤放在 pending_earlier。roster 保留每一步的人物和势力。
+    """
     canon = (dianwen or "").strip() or DEFAULT_DIANWEN
-    if decisions:
-        history = "\n".join(
-            f"{i}. {item.get('title') or '未命名'}\n"
+
+    def full_lines(items: list[dict]) -> str:
+        if not items:
+            return "（无）"
+        return "\n".join(
+            f"{item.get('order_index') or i}. {item.get('title') or '未命名'}\n"
             f"剧情：{item.get('plot') or ''}\n"
             f"新人物：{item.get('new_characters') or '无'}\n"
             f"新势力：{item.get('new_factions') or '无'}"
-            for i, item in enumerate(decisions, 1)
+            for i, item in enumerate(items, 1)
+        )
+
+    roster = roster or []
+    if roster:
+        roster_text = "\n".join(
+            f"{item.get('order_index') or i}. {item.get('title') or '未命名'}"
+            f"；新人物：{item.get('new_characters') or '无'}"
+            f"；新势力：{item.get('new_factions') or '无'}"
+            for i, item in enumerate(roster, 1)
         )
     else:
-        history = "（还没有已选决策，这是从开头往下的第一步）"
+        roster_text = "（还没有已选决策）"
+    recent_text = full_lines(recent) if recent else "（还没有已选决策，这是从开头往下的第一步）"
     user = f"""【用户的开头或思路】
 {idea.strip()}
 
-【已经选定的剧情决策，必须全部承接，不能推翻】
-{history}
+【全程决策名册。已登场的人物和势力不能遗忘，也不能推翻已选定的走向】
+{roster_text}
+
+【更早步骤的情节摘要】
+{(earlier_digest or '').strip() or '（还没有）'}
+
+【尚未摘要、必须按原文承接的较早决策】
+{full_lines(pending_earlier or [])}
+
+【最近决策全文。下一步必须紧接最后一条】
+{recent_text}
 
 【癫文宝经】
 下面是通用情节原则。三个方向都要能用上其中的手法：读者没想过的下一步、人物之间的信息差、不到尾声猜不中结局、爽点与反差。
@@ -304,6 +333,30 @@ def build_plot_options_prompt(idea: str, decisions: list[dict], dianwen: str) ->
 }}"""
     return [
         {"role": "system", "content": SYSTEM_OUTLINE},
+        {"role": "user", "content": user},
+    ]
+
+
+def build_decision_digest_prompt(existing: str, steps: list[dict]) -> list[dict]:
+    """把较早的已选决策收成一段情节摘要，供后续步骤继续承接。"""
+    body = "\n".join(
+        f"{item.get('order_index')}. {item.get('title') or '未命名'}\n"
+        f"剧情：{item.get('plot') or ''}\n"
+        f"新人物：{item.get('new_characters') or '无'}\n"
+        f"新势力：{item.get('new_factions') or '无'}"
+        for item in steps
+    )
+    prior = (existing or "").strip() or "（还没有摘要）"
+    user = f"""已有摘要：
+{prior}
+
+需要并入摘要的决策：
+{body}
+
+把这些内容收成一段 800 到 1600 字的情节提要。按时间保留已发生的选择、人物关系变化、新登场的人物和势力、还没解开的悬念。
+不要写成场景，不要写对白，不要加入尚未发生的情节。只输出摘要正文。"""
+    return [
+        {"role": "system", "content": "你是故事架构师，只把已选定的剧情收成可继续承接的摘要。"},
         {"role": "user", "content": user},
     ]
 

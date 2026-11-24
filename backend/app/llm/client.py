@@ -35,6 +35,12 @@ def _headers() -> dict:
     }
 
 
+def output_token_budget(prompt_chars: int) -> int:
+    """按模型输出上限要额度，并给输入留出上下文空间。"""
+    room = settings.llm_context_tokens - max(prompt_chars, 1) - 1024
+    return max(4096, min(settings.llm_max_output_tokens, room))
+
+
 def _payload(messages: list[dict], stream: bool, temperature: float | None,
              max_tokens: int | None) -> dict:
     return {

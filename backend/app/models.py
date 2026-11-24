@@ -29,6 +29,8 @@ class Project(SQLModel, table=True):
     full_synopsis: str = ""    # 全文概述，供生成大纲使用
     dianwen: str = ""          # 旧字段，已改为全局共用，见 AppSetting
     opening_idea: str = ""     # 自动填充用的开头思路
+    plot_decision_digest: str = ""          # 较早剧情决策的情节摘要
+    plot_decision_digest_through: int = 0   # 摘要已覆盖到的决策序号
     core_character_count: int = 0  # 核心角色人数，0 表示用默认 17
     target_words: int = 0      # 目标总字数（0 表示不限）
     created_at: datetime = Field(default_factory=_now)
