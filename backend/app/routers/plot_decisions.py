@@ -115,7 +115,7 @@ async def generate_plot_options(project_id: int, body: PlotOptionsRequest,
         raw = await client.chat(
             prompts.build_plot_options_prompt(idea, history, dianwen),
             temperature=0.9,
-            max_tokens=8192,
+            max_tokens=32768,
         )
     except client.LLMError as e:
         raise HTTPException(502, str(e)) from e
