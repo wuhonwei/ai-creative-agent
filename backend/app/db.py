@@ -29,6 +29,9 @@ _COLUMN_MIGRATIONS = {
         "plot_decision_digest": "TEXT NOT NULL DEFAULT ''",
         "plot_decision_digest_through": "INTEGER NOT NULL DEFAULT 0",
     },
+    "plotdecision": {
+        "cache_key": "TEXT NOT NULL DEFAULT ''",
+    },
     "shot": {
         "shot_size": "TEXT NOT NULL DEFAULT ''",
         "sound": "TEXT NOT NULL DEFAULT ''",

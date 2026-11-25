@@ -307,7 +307,8 @@ class PlotDecision(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     project_id: int = Field(foreign_key="project.id", index=True)
-    status: str = "candidate"  # candidate | chosen
+    status: str = "candidate"  # candidate | cached | chosen
+    cache_key: str = ""        # 仅 cached 使用，用来确认这组备选仍对应当前思路和已选决策
     order_index: int = 0
     title: str = ""
     plot: str = ""

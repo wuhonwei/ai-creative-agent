@@ -1,10 +1,14 @@
-"""剧情决策：三个方向供选择，选定后进入决策链。"""
+"""剧情决策：三个方向供选择，选定后进入决策链。
+
+生成一组方向后，后台再准备下一组缓存。缓存不替换当前选项；
+用户刷新时若缓存已就绪，立即换成那一组，并再补一份新缓存。
+"""
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlmodel import Session, select
 
-from app.db import get_session
+from app.db import engine, get_session
 from app.llm import client, prompts
 from app.models import PlotDecision, Project
 from app.schemas import PlotChooseRequest, PlotOptionsRequest
@@ -17,6 +21,7 @@ logger = logging.getLogger(__name__)
 _EMPTY = {"无", "没有", "暂无", "无。", "没有新人物", "没有新势力"}
 RECENT_FULL = 12
 FOLD_BATCH = 4
+_warming: set[tuple[int, str]] = set()
 
 
 def _text(value) -> str:
@@ -40,13 +45,128 @@ def _chosen(session: Session, project_id: int) -> list[PlotDecision]:
     ).all()
 
 
-def _candidates(session: Session, project_id: int) -> list[PlotDecision]:
+def _by_status(session: Session, project_id: int, status: str) -> list[PlotDecision]:
     return session.exec(
         select(PlotDecision)
         .where(PlotDecision.project_id == project_id)
-        .where(PlotDecision.status == "candidate")
+        .where(PlotDecision.status == status)
         .order_by(PlotDecision.id)
     ).all()
+
+
+def _candidates(session: Session, project_id: int) -> list[PlotDecision]:
+    return _by_status(session, project_id, "candidate")
+
+
+def _cached(session: Session, project_id: int) -> list[PlotDecision]:
+    return _by_status(session, project_id, "cached")
+
+
+def _cache_key(idea: str, chosen: list[PlotDecision]) -> str:
+    chain = ",".join(f"{row.id}:{row.order_index}" for row in chosen)
+    return f"{idea.strip()}\n{chain}"
+
+
+def _schedule_warm(background: BackgroundTasks, project_id: int, idea: str, cache_key: str) -> None:
+    background.add_task(_warm_plot_cache, project_id, idea, cache_key)
+
+
+async def _produce_options(session: Session, project: Project, idea: str) -> tuple[list[dict], str]:
+    """按当前已选决策生成三个方向。返回选项和对应的缓存键。"""
+    chosen = _chosen(session, project.id)
+    _earlier, pending, recent = _split_history(
+        chosen, project.plot_decision_digest_through or 0
+    )
+    digest = await _refresh_digest(project, pending)
+    session.add(project)
+    session.commit()
+    through = project.plot_decision_digest_through or 0
+    if through:
+        pending = [row for row in pending if row.order_index > through]
+    chosen = _chosen(session, project.id)
+    dianwen = prompts.resolve_dianwen(None, get_dianwen(session))
+    messages = prompts.build_plot_options_prompt(
+        idea,
+        [_decision_dict(row) for row in recent],
+        dianwen,
+        roster=[_decision_dict(row) for row in chosen],
+        earlier_digest=digest,
+        pending_earlier=[_decision_dict(row) for row in pending],
+    )
+    budget = client.output_token_budget(sum(len(m.get("content") or "") for m in messages))
+    raw = await client.chat(messages, temperature=0.9, max_tokens=budget)
+    options = _parse_options(raw)
+    if len(options) < 3:
+        logger.error("剧情决策不足三个可用方向：%s", raw[:1000])
+        raise HTTPException(502, "模型没有给出三个不同方向，请再刷新一次")
+    return options, _cache_key(idea, chosen)
+
+
+def _save_rows(session: Session, project_id: int, options: list[dict], status: str, cache_key: str = "") -> None:
+    for item in options:
+        session.add(PlotDecision(
+            project_id=project_id,
+            status=status,
+            cache_key=cache_key,
+            **item,
+        ))
+
+
+def _promote_cache(session: Session, project: Project, idea: str, cache_key: str) -> bool:
+    """缓存对得上当前思路和已选决策时，换成正在看的三个方向。对不上就丢掉。"""
+    cached = _cached(session, project.id)
+    matched = [row for row in cached if row.cache_key == cache_key]
+    stale = [row for row in cached if row.cache_key != cache_key]
+    for row in stale:
+        session.delete(row)
+    if len(matched) < 3:
+        session.commit()
+        return False
+    for row in _candidates(session, project.id):
+        session.delete(row)
+    for row in matched[:3]:
+        row.status = "candidate"
+        row.cache_key = ""
+        session.add(row)
+    for row in matched[3:]:
+        session.delete(row)
+    project.opening_idea = idea
+    session.add(project)
+    session.commit()
+    return True
+
+
+async def _warm_plot_cache(project_id: int, idea: str, cache_key: str) -> None:
+    """再生成一组方向放进缓存，不改当前正在看的选项。"""
+    token = (project_id, cache_key)
+    if token in _warming:
+        return
+    _warming.add(token)
+    try:
+        with Session(engine) as session:
+            project = session.get(Project, project_id)
+            if not project:
+                return
+            chosen = _chosen(session, project_id)
+            if _cache_key(idea, chosen) != cache_key:
+                return
+            ready = [row for row in _cached(session, project_id) if row.cache_key == cache_key]
+            if len(ready) >= 3:
+                return
+            try:
+                options, produced_key = await _produce_options(session, project, idea)
+            except (HTTPException, client.LLMError) as e:
+                logger.error("[plot] 预备下一组方向失败：%s", getattr(e, "detail", e))
+                return
+            if produced_key != cache_key or _cache_key(idea, _chosen(session, project_id)) != cache_key:
+                return
+            for row in _cached(session, project_id):
+                session.delete(row)
+            _save_rows(session, project_id, options, "cached", cache_key)
+            session.commit()
+            logger.info("[plot] 已备好下一组方向 project=%s", project_id)
+    finally:
+        _warming.discard(token)
 
 
 def _payload(session: Session, project_id: int) -> dict:
@@ -138,8 +258,9 @@ def list_plot_decisions(project_id: int, session: Session = Depends(get_session)
 
 @router.post("/projects/{project_id}/plot-decisions/options")
 async def generate_plot_options(project_id: int, body: PlotOptionsRequest,
+                                background: BackgroundTasks,
                                 session: Session = Depends(get_session)):
-    """生成三个后续方向。刷新时替换尚未选定的选项，已选决策保留。"""
+    """生成三个后续方向。有缓存时刷新立即换上，并在后台再备一组。"""
     idea = (body.idea or "").strip()
     if not idea:
         raise HTTPException(400, "请先写下开头或思路")
@@ -148,42 +269,23 @@ async def generate_plot_options(project_id: int, body: PlotOptionsRequest,
         raise HTTPException(404, "项目不存在")
 
     chosen = _chosen(session, project_id)
-    _earlier, pending, recent = _split_history(
-        chosen, project.plot_decision_digest_through or 0
-    )
-    digest = await _refresh_digest(project, pending)
-    session.add(project)
-    session.commit()
-    through = project.plot_decision_digest_through or 0
-    if through:
-        pending = [row for row in pending if row.order_index > through]
-    dianwen = prompts.resolve_dianwen(None, get_dianwen(session))
-    messages = prompts.build_plot_options_prompt(
-        idea,
-        [_decision_dict(row) for row in recent],
-        dianwen,
-        roster=[_decision_dict(row) for row in chosen],
-        earlier_digest=digest,
-        pending_earlier=[_decision_dict(row) for row in pending],
-    )
-    budget = client.output_token_budget(sum(len(m.get("content") or "") for m in messages))
+    key = _cache_key(idea, chosen)
+    if _promote_cache(session, project, idea, key):
+        _schedule_warm(background, project_id, idea, key)
+        return _payload(session, project_id)
+
     try:
-        raw = await client.chat(messages, temperature=0.9, max_tokens=budget)
+        options, key = await _produce_options(session, project, idea)
     except client.LLMError as e:
         raise HTTPException(502, str(e)) from e
-
-    options = _parse_options(raw)
-    if len(options) < 3:
-        logger.error("剧情决策不足三个可用方向：%s", raw[:1000])
-        raise HTTPException(502, "模型没有给出三个不同方向，请再刷新一次")
 
     project.opening_idea = idea
     session.add(project)
     for row in _candidates(session, project_id):
         session.delete(row)
-    for item in options:
-        session.add(PlotDecision(project_id=project_id, status="candidate", **item))
+    _save_rows(session, project_id, options, "candidate")
     session.commit()
+    _schedule_warm(background, project_id, idea, key)
     return _payload(session, project_id)
 
 
@@ -204,6 +306,8 @@ def choose_plot_option(project_id: int, body: PlotChooseRequest,
     for row in _candidates(session, project_id):
         if row.id != option.id:
             session.delete(row)
+    for row in _cached(session, project_id):
+        session.delete(row)
     session.commit()
     return _payload(session, project_id)
 
@@ -224,6 +328,8 @@ def undo_latest_decision(project_id: int, session: Session = Depends(get_session
         session.add(project)
     session.delete(removed)
     for row in _candidates(session, project_id):
+        session.delete(row)
+    for row in _cached(session, project_id):
         session.delete(row)
     session.commit()
     return _payload(session, project_id)
