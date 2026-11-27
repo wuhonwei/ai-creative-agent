@@ -338,6 +338,26 @@ def build_synopsis_spare_prompt(written: str, score: int, harder: bool = False) 
     ]
 
 
+def build_synopsis_chunk_prompt(chunk: str, floor: int, ceiling: int, harder: bool = False) -> list[dict]:
+    """把一段原文改成指定字数的情节提要。"""
+    extra = "每句只留一个决定，或一条谁知道、谁不知道的信息。\n" if harder else ""
+    user = f"""把下面这一段改成情节提要。只写决定、信息差、势力变化和结局。
+禁止对白、引号、原话、动作分解、神态、表情、身体、吃相和景物。
+改完必须在 {floor} 到 {ceiling} 字之间。少写了就不合格，不要把情节删掉来凑干净。
+不要写这一段之外的新情节。
+{extra}只输出这一段的概述。
+
+原文：
+{chunk.strip()}"""
+    return [
+        {
+            "role": "system",
+            "content": "你是故事架构师。按指定字数写情节提要，禁止对白和情景描写。",
+        },
+        {"role": "user", "content": user},
+    ]
+
+
 def build_synopsis_expand_prompt(short: str, source: str) -> list[dict]:
     """在不抬高啰嗦分的前提下，把过短的提要补回各阶段。"""
     user = f"""下面有两篇文字。短的是已经去掉对白和情景的情节提要，长的是改写前的原文。
