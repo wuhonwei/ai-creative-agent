@@ -30,11 +30,11 @@ function SynopsisScore({ text, raw }) {
   if (!score) return null
   const edited = score.mark && score.mark !== synopsisMark(text)
   const verbosity = score.verbosity || {}
-  const verboseHigh = (verbosity.score ?? 0) >= 6
+  const verboseHigh = (verbosity.score ?? 10) > 2
   return (
     <div className="score-list">
       <p className="hint" style={{ margin: 0 }}>
-        啰嗦分高表示越像正文。条例分高表示这条癫文宝经落到了具体情节上。
+        啰嗦分越低越好，高于 2 分不会采用。条例分高表示这条癫文宝经落到了具体情节上。
         {edited ? ' 概述已改过，下面仍是生成时的评分。' : ''}
       </p>
       <div className="score-row">
@@ -283,7 +283,7 @@ export default function BibleEditor({ project, onSaved, notify }) {
           placeholder="给作者看的全书情节：开端、转折、读者会猜错的方向、实际结局。可以自己改。"
           onChange={(e) => set('full_synopsis', e.target.value)} />
         <p className="hint">
-          当前 {(form.full_synopsis || '').trim().length} 字。生成目标是 8000 到 10000 字的情节提要，不写对白和情景。依据开头思路和癫文宝经，覆盖一部预计百万字小说的阶段转折。框里的文字可以随意改，改完会自动保存。再点一次生成时，如果后台已经备好下一篇，会立刻换上，并再准备一篇。
+          当前 {(form.full_synopsis || '').trim().length} 字。生成目标是 8000 到 10000 字的情节提要，啰嗦分要压到 2 分及以下，越低越好。高于 2 分会继续改，不把对白和情景交出来。再点一次生成时，如果后台已经备好合格的下一篇，会立刻换上，并再准备一篇。
         </p>
         <SynopsisScore text={form.full_synopsis || ''} raw={form.synopsis_score} />
         <div className="row">

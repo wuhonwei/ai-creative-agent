@@ -218,6 +218,7 @@ def _delete_characters(session: Session, existing: list[Character]) -> None:
 
 
 _NO_THINKING = {"thinking": {"type": "disabled"}}
+VERBOSITY_MAX = 2
 
 
 _SPEECH_RE = re.compile(
@@ -394,11 +395,122 @@ async def _score_synopsis(text: str, dianwen: str) -> str:
     return json.dumps(_normalize_score(parsed, rules, text), ensure_ascii=False)
 
 
+def _verbosity_of(score_json: str) -> int:
+    try:
+        data = json.loads(score_json or "")
+    except json.JSONDecodeError:
+        return 10
+    verbosity = data.get("verbosity") if isinstance(data, dict) else None
+    if not isinstance(verbosity, dict):
+        return 10
+    score = _clamp_score(verbosity.get("score"))
+    return 10 if score is None else score
+
+
+async def _spare_synopsis(text: str, score: int, limit: int = 1400, harder: bool = False) -> str:
+    """整篇改写，把啰嗦分往下压，并保住各阶段的情节。"""
+    if len(text) <= 12000:
+        messages = prompts.build_synopsis_spare_prompt(text, score, harder)
+        raw = await client.chat(messages, temperature=0.1, max_tokens=16384, extra=_NO_THINKING)
+        whole = _clean_prose(raw)
+        if len(whole) >= 1000:
+            return _strip_quotes(whole) if _too_scenic(whole) else whole
+    parts = []
+    for chunk in _synopsis_chunks(text, limit):
+        messages = prompts.build_synopsis_spare_prompt(chunk, score, harder)
+        raw = await client.chat(messages, temperature=0.1, max_tokens=8192, extra=_NO_THINKING)
+        part = _clean_prose(raw)
+        if len(part) < 80:
+            part = chunk
+        if _too_scenic(part):
+            part = _strip_quotes(part)
+        parts.append(part)
+    return "\n".join(parts).strip()
+
+
+async def _prefer_long_enough(text: str, score_json: str, source: str, dianwen: str) -> tuple[str, str]:
+    """低分稿太短时补回阶段。补长后啰嗦分升高，就留短的。"""
+    if len(text) >= 7000 or len(source) < 7000:
+        return text, score_json
+    messages = prompts.build_synopsis_expand_prompt(text, source)
+    raw = await client.chat(messages, temperature=0.2, max_tokens=16384, extra=_NO_THINKING)
+    expanded = _clean_prose(raw)
+    if len(expanded) < len(text) + 500:
+        return text, score_json
+    if _too_scenic(expanded):
+        expanded = _strip_quotes(expanded)
+    expanded_json = await _score_synopsis(expanded, dianwen)
+    expanded_score = _verbosity_of(expanded_json)
+    if expanded_score <= VERBOSITY_MAX:
+        return expanded, expanded_json
+    logger.info("[synopsis] 补长后啰嗦分 %s，仍用较短的低分稿", expanded_score)
+    return text, score_json
+
+
+async def _until_spare(text: str, dianwen: str) -> tuple[str, str]:
+    """啰嗦分高于合格线就继续改，不把高分稿交出去。"""
+    source = text
+    score_json = await _score_synopsis(text, dianwen)
+    best_text, best_score, best_json = text, _verbosity_of(score_json), score_json
+    harder = False
+    for round_index in range(6):
+        score = _verbosity_of(score_json)
+        if score <= VERBOSITY_MAX:
+            return await _prefer_long_enough(text, score_json, source, dianwen)
+        logger.info("[synopsis] 啰嗦分 %s，第 %s 轮压低", score, round_index + 1)
+        if round_index >= 2:
+            harder = True
+        nxt = await _spare_synopsis(
+            text, score, limit=700 if harder else 1400, harder=harder,
+        )
+        if len(source) >= 7000 and 0 < len(nxt) < 6000:
+            nxt_json = await _score_synopsis(nxt, dianwen)
+            nxt_score = _verbosity_of(nxt_json)
+            logger.info("[synopsis] 较短改写 %s 字，啰嗦分 %s", len(nxt), nxt_score)
+            if nxt_score < best_score:
+                best_text, best_score, best_json = nxt, nxt_score, nxt_json
+            if nxt_score <= VERBOSITY_MAX:
+                return await _prefer_long_enough(nxt, nxt_json, source, dianwen)
+            harder = True
+            continue
+        if not nxt or synopsis_mark(nxt) == synopsis_mark(text):
+            harder = True
+            nxt = _strip_quotes(text)
+        text = nxt.strip() or text
+        score_json = await _score_synopsis(text, dianwen)
+        score = _verbosity_of(score_json)
+        if score < best_score:
+            best_text, best_score, best_json = text, score, score_json
+        if score <= VERBOSITY_MAX:
+            return await _prefer_long_enough(text, score_json, source, dianwen)
+    logger.error("[synopsis] 压低之后啰嗦分仍是 %s", best_score)
+    if best_score <= VERBOSITY_MAX:
+        return await _prefer_long_enough(best_text, best_json, source, dianwen)
+    return best_text, best_json
+
+
+async def _produce_scored_synopsis(idea: str, title: str, dianwen: str) -> tuple[str, str]:
+    text = await _write_long_synopsis(idea, title, dianwen)
+    if len(text) < 1000:
+        return text, ""
+    return await _until_spare(text, dianwen)
+
+
+def _backup_ready(project: Project, cache_key: str) -> bool:
+    return (
+        (project.synopsis_cache_key or "") == cache_key
+        and len((project.synopsis_cache or "").strip()) >= 1000
+        and _verbosity_of(project.synopsis_cache_score or "") <= VERBOSITY_MAX
+    )
+
+
 def _take_synopsis_cache(project: Project, cache_key: str) -> bool:
     """缓存和当前思路、书名、癫文宝经一致时，换成正在看的这篇。"""
     cached = (project.synopsis_cache or "").strip()
-    if project.synopsis_cache_key != cache_key or len(cached) < 1000:
-        if project.synopsis_cache_key and project.synopsis_cache_key != cache_key:
+    cached_score = _verbosity_of(project.synopsis_cache_score or "")
+    cache_ok = project.synopsis_cache_key == cache_key and len(cached) >= 1000 and cached_score <= VERBOSITY_MAX
+    if not cache_ok:
+        if project.synopsis_cache or project.synopsis_cache_key:
             project.synopsis_cache = ""
             project.synopsis_cache_score = ""
             project.synopsis_cache_key = ""
@@ -428,24 +540,26 @@ async def _warm_synopsis_cache(project_id: int, idea: str, title: str, cache_key
             dianwen = prompts.resolve_dianwen(None, get_dianwen(session))
             if _synopsis_cache_key(idea, project.title, dianwen) != cache_key:
                 return
-            if (project.synopsis_cache_key or "") == cache_key and len((project.synopsis_cache or "").strip()) >= 1000:
+            if _backup_ready(project, cache_key):
                 return
             try:
-                text = await _write_long_synopsis(idea, title or project.title, dianwen)
+                text, score = await _produce_scored_synopsis(idea, title or project.title, dianwen)
             except client.LLMError as e:
                 logger.error("[synopsis] 预备下一篇失败：%s", e)
                 return
-            if len(text) < 1000:
-                logger.error("[synopsis] 预备的概述过短：%s 字", len(text))
+            if len(text) < 1000 or _verbosity_of(score) > VERBOSITY_MAX:
+                logger.error(
+                    "[synopsis] 预备的概述未达标：%s 字，啰嗦分 %s",
+                    len(text), _verbosity_of(score),
+                )
                 return
-            score = await _score_synopsis(text, dianwen)
             project = session.get(Project, project_id)
             if not project:
                 return
             dianwen = prompts.resolve_dianwen(None, get_dianwen(session))
             if _synopsis_cache_key(idea, project.title, dianwen) != cache_key:
                 return
-            if (project.synopsis_cache_key or "") == cache_key and len((project.synopsis_cache or "").strip()) >= 1000:
+            if _backup_ready(project, cache_key):
                 return
             project.synopsis_cache = text
             project.synopsis_cache_score = score
@@ -473,14 +587,14 @@ async def generate_full_synopsis(project_id: int, body: SynopsisGenerateRequest,
     from_backup = _take_synopsis_cache(project, cache_key)
     if not from_backup:
         try:
-            text = await _write_long_synopsis(idea, project.title, dianwen)
+            text, score = await _produce_scored_synopsis(idea, project.title, dianwen)
         except client.LLMError as e:
             raise HTTPException(502, str(e)) from e
-        if len(text) < 1000:
-            logger.error("全文概述过短：%s 字", len(text))
-            raise HTTPException(502, "模型没写出可用的全文概述，请再试一次")
+        if len(text) < 1000 or _verbosity_of(score) > VERBOSITY_MAX:
+            logger.error("全文概述未达标：%s 字，啰嗦分 %s", len(text), _verbosity_of(score))
+            raise HTTPException(502, "这篇概述的啰嗦分还是太高，请再生成一次")
         project.full_synopsis = text
-        project.synopsis_score = await _score_synopsis(text, dianwen)
+        project.synopsis_score = score
     project.opening_idea = idea
     project.updated_at = datetime.utcnow()
     session.add(project)
