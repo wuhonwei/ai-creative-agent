@@ -227,7 +227,7 @@ export default function BibleEditor({ project, onSaved, notify }) {
           placeholder="给作者看的全书情节：开端、转折、读者会猜错的方向、实际结局。可以自己改。"
           onChange={(e) => set('full_synopsis', e.target.value)} />
         <p className="hint">
-          当前 {(form.full_synopsis || '').trim().length} 字。生成目标是 8000 到 10000 字，依据开头思路和癫文宝经，写成一部预计百万字小说的情节概述。框里的文字可以随意改，改完会自动保存。
+          当前 {(form.full_synopsis || '').trim().length} 字。生成目标是 8000 到 10000 字的情节提要，不写对白和情景。依据开头思路和癫文宝经，覆盖一部预计百万字小说的阶段转折。框里的文字可以随意改，改完会自动保存。
         </p>
         <div className="row">
           <button onClick={generateSynopsis} disabled={writingSynopsis || filling || !idea.trim()}>

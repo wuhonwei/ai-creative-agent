@@ -1,5 +1,6 @@
 """项目（含故事圣经）与角色的 CRUD。"""
 import logging
+import re
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -218,10 +219,73 @@ def _delete_characters(session: Session, existing: list[Character]) -> None:
 _NO_THINKING = {"thinking": {"type": "disabled"}}
 
 
+_SPEECH_RE = re.compile(
+    r"(?:说|道|问|喊|笑道|回答|开口)[：:]|[“「\"][^”」\"]{6,}[”」\"]"
+)
+
+
+def _too_scenic(text: str) -> bool:
+    if _SPEECH_RE.search(text):
+        return True
+    return sum(text.count(ch) for ch in "“”「」\"") >= 2
+
+
+def _strip_quotes(text: str) -> str:
+    """去掉引号。像对白的内容删掉，短专名只去掉引号本身。"""
+
+    def _repl(match: re.Match) -> str:
+        inner = match.group(1).strip()
+        if re.search(r"[我你吗呢吧啊。！？，]", inner) or len(inner) > 12:
+            return ""
+        return inner
+
+    text = re.sub(r"[“「\"]([^”」\"]*)[”」\"]", _repl, text)
+    text = re.sub(r"(说|道|问|喊|笑道|回答|开口)[：:]\s*", "", text)
+    text = re.sub(r"[，、]{2,}", "，", text)
+    text = re.sub(r"。{2,}", "。", text)
+    return text.strip()
+
+
+async def _restyle_one(text: str) -> str:
+    messages = prompts.build_synopsis_restyle_prompt(text)
+    raw = await client.chat(messages, temperature=0.2, max_tokens=12288, extra=_NO_THINKING)
+    restyled = _clean_prose(raw)
+    if len(restyled) < 200:
+        return text
+    return restyled
+
+
+def _synopsis_chunks(text: str, limit: int = 1800) -> list[str]:
+    paragraphs = [part.strip() for part in re.split(r"\n+", text) if part.strip()]
+    chunks: list[str] = []
+    buf = ""
+    for para in paragraphs:
+        if buf and len(buf) + len(para) > limit:
+            chunks.append(buf)
+            buf = para
+        else:
+            buf = f"{buf}\n{para}".strip()
+    if buf:
+        chunks.append(buf)
+    return chunks or [text]
+
+
+async def _restyle_synopsis(text: str) -> str:
+    if not _too_scenic(text):
+        return text
+    parts = []
+    for chunk in _synopsis_chunks(text):
+        part = await _restyle_one(chunk)
+        if _too_scenic(part):
+            part = await _restyle_one(part)
+        parts.append(_strip_quotes(part) if _too_scenic(part) else part)
+    return "\n".join(parts).strip()
+
+
 async def _write_long_synopsis(idea: str, title: str, dianwen: str) -> str:
     messages = prompts.build_full_synopsis_prompt(idea, title, dianwen)
     raw = await client.chat(
-        messages, temperature=0.7, max_tokens=24576, extra=_NO_THINKING,
+        messages, temperature=0.4, max_tokens=24576, extra=_NO_THINKING,
     )
     text = _clean_prose(raw)
     for _ in range(3):
@@ -239,6 +303,8 @@ async def _write_long_synopsis(idea: str, title: str, dianwen: str) -> str:
         if len(more) < 200:
             break
         text = text.rstrip() + "\n" + more
+    if _too_scenic(text):
+        text = _strip_quotes(await _restyle_synopsis(text))
     return text.strip()
 
 
