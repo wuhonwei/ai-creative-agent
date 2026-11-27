@@ -1,6 +1,61 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 
+function synopsisMark(text) {
+  let hash = 0
+  const value = (text || '').trim()
+  for (let i = 0; i < value.length; i++) {
+    hash = (Math.imul(hash, 31) + value.charCodeAt(i)) >>> 0
+  }
+  return hash.toString(16)
+}
+
+function readSynopsisScore(raw) {
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function scoreText(value) {
+  return value == null ? '没评上' : `${value}/10`
+}
+
+function SynopsisScore({ text, raw }) {
+  const score = readSynopsisScore(raw)
+  if (!score) return null
+  const edited = score.mark && score.mark !== synopsisMark(text)
+  const verbosity = score.verbosity || {}
+  const verboseHigh = (verbosity.score ?? 0) >= 6
+  return (
+    <div className="score-list">
+      <p className="hint" style={{ margin: 0 }}>
+        啰嗦分高表示越像正文。条例分高表示这条癫文宝经落到了具体情节上。
+        {edited ? ' 概述已改过，下面仍是生成时的评分。' : ''}
+      </p>
+      <div className="score-row">
+        <div className={verboseHigh ? 'decision-label bad' : 'decision-label good'}>
+          啰嗦 {scoreText(verbosity.score)}
+        </div>
+        {verbosity.note && <div className="rule">{verbosity.note}</div>}
+      </div>
+      {(score.rules || []).map((rule) => (
+        <div className="score-row" key={rule.index}>
+          <div className={(rule.score ?? 0) >= 6 ? 'decision-label good' : 'decision-label bad'}>
+            条例 {rule.index} {scoreText(rule.score)}
+          </div>
+          <div className="rule">{rule.rule}</div>
+          {rule.note && <div className="hint">{rule.note}</div>}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export default function BibleEditor({ project, onSaved, notify }) {
   const [form, setForm] = useState(project)
   const [chars, setChars] = useState([])
@@ -116,7 +171,8 @@ export default function BibleEditor({ project, onSaved, notify }) {
       setForm((f) => ({ ...f, ...data.project }))
       onSaved?.()
       const length = data.length || (data.project.full_synopsis || '').length
-      notify(length >= 8000 ? `全文概述已生成，共 ${length} 字` : `全文概述已生成，这次只有 ${length} 字，可以再生成一次`)
+      const ready = length >= 8000 ? `共 ${length} 字` : `这次只有 ${length} 字，可以再生成一次`
+      notify(data.from_backup ? `已换上备好的全文概述，${ready}` : `全文概述已生成，${ready}`)
     } catch (e) {
       notify(e.message, true)
     } finally {
@@ -227,8 +283,9 @@ export default function BibleEditor({ project, onSaved, notify }) {
           placeholder="给作者看的全书情节：开端、转折、读者会猜错的方向、实际结局。可以自己改。"
           onChange={(e) => set('full_synopsis', e.target.value)} />
         <p className="hint">
-          当前 {(form.full_synopsis || '').trim().length} 字。生成目标是 8000 到 10000 字的情节提要，不写对白和情景。依据开头思路和癫文宝经，覆盖一部预计百万字小说的阶段转折。框里的文字可以随意改，改完会自动保存。
+          当前 {(form.full_synopsis || '').trim().length} 字。生成目标是 8000 到 10000 字的情节提要，不写对白和情景。依据开头思路和癫文宝经，覆盖一部预计百万字小说的阶段转折。框里的文字可以随意改，改完会自动保存。再点一次生成时，如果后台已经备好下一篇，会立刻换上，并再准备一篇。
         </p>
+        <SynopsisScore text={form.full_synopsis || ''} raw={form.synopsis_score} />
         <div className="row">
           <button onClick={generateSynopsis} disabled={writingSynopsis || filling || !idea.trim()}>
             {writingSynopsis ? '概述生成中…' : '生成全文概述'}

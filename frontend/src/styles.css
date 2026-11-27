@@ -160,6 +160,10 @@ label { display: block; margin: 10px 0 4px; color: var(--muted); font-size: 12px
 .decision-label.bad { color: var(--amber); }
 .decision-card.chosen { background: transparent; }
 
+.score-list { margin: 8px 0 12px; display: flex; flex-direction: column; gap: 8px; }
+.score-row { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--panel-2); }
+.score-row .rule { font-size: 13px; margin: 4px 0; line-height: 1.5; }
+
 .char-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 10px; }
 .char-card .name { font-weight: 600; }
 .char-card .state { color: var(--amber); font-size: 12px; margin-top: 4px; }

@@ -335,6 +335,57 @@ def build_synopsis_restyle_prompt(written: str) -> list[dict]:
     ]
 
 
+def split_dianwen_rules(text: str) -> list[str]:
+    """把癫文宝经拆成一条一条，供概述逐条打分。"""
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    pieces = re.split(r"(?:^|\n)\s*\d+\s*[\.、．]\s*", raw)
+    rules = [piece.strip().strip("；;").strip() for piece in pieces if piece.strip()]
+    if len(rules) >= 2:
+        return rules
+    rules = []
+    for piece in re.split(r"(?=\d+\s*[\.、．])", raw):
+        piece = re.sub(r"^\d+\s*[\.、．]\s*", "", piece).strip().strip("；;").strip()
+        if piece:
+            rules.append(piece)
+    if len(rules) >= 2:
+        return rules
+    lines = [line.strip() for line in re.split(r"[\n；;]+", raw) if line.strip()]
+    return lines or [raw]
+
+
+def build_synopsis_score_prompt(synopsis: str, rules: list[str]) -> list[dict]:
+    """给一篇全文概述打啰嗦分，并逐条对照癫文宝经。"""
+    numbered = "\n".join(f"{i}. {rule}" for i, rule in enumerate(rules, 1)) or "（没有条例）"
+    user = f"""给下面这篇全文概述打分。不要改写概述。
+
+啰嗦分是 0 到 10 的整数，10 分最啰嗦，0 分最干净。
+啰嗦指写成了小说正文：对白、引号、原话、动作分解、神态、表情、身体、感官、吃相、景物。
+只写决定、信息差、势力变化和结局的情节提要，分数要低。
+note 用一两句说明扣分点，写明有没有对白和情景描写。
+
+癫文宝经每一条单独打 0 到 10 分。10 分表示这条原则落到了具体的人、事和转折上，0 分表示概述里看不见。
+note 点出落在哪一处情节。没落到就写没看见。
+
+条例：
+{numbered}
+
+概述：
+{synopsis.strip()}
+
+只输出 JSON：
+{{
+  "verbosity": {{"score": 0, "note": ""}},
+  "rules": [{{"index": 1, "score": 0, "note": ""}}]
+}}
+rules 必须覆盖上面每一条，index 从 1 开始，条数要和条例一致。"""
+    return [
+        {"role": "system", "content": "你是故事编辑。只按要求打分，输出 JSON。不要改写原文。"},
+        {"role": "user", "content": user},
+    ]
+
+
 def build_bible_from_synopsis_prompt(synopsis: str, title: str, dianwen: str,
                                      core_character_count: int = 17) -> list[dict]:
     """根据作者改过的全文概述提取故事圣经和角色档案。概述本身不再改写。"""

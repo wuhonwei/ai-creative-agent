@@ -1,12 +1,13 @@
 """项目（含故事圣经）与角色的 CRUD。"""
+import json
 import logging
 import re
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlmodel import Session, select
 
-from app.db import get_session
+from app.db import engine, get_session
 from app.llm import client, prompts
 from app.models import (
     Chapter, Character, CharacterDesign, CharacterRefImage, OutlineNode,
@@ -308,10 +309,159 @@ async def _write_long_synopsis(idea: str, title: str, dianwen: str) -> str:
     return text.strip()
 
 
+def synopsis_mark(text: str) -> str:
+    """和前端同一套 32 位滚动哈希，用来判断概述有没有被改过。"""
+    value = 0
+    for ch in (text or "").strip():
+        value = (value * 31 + ord(ch)) & 0xFFFFFFFF
+    return format(value, "x")
+
+
+def _synopsis_cache_key(idea: str, title: str, dianwen: str) -> str:
+    return f"{idea.strip()}\n{(title or '').strip()}\n{(dianwen or '').strip()}"
+
+
+def _clamp_score(value):
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0, min(10, number))
+
+
+def _normalize_score(parsed: dict, rules: list[str], text: str) -> dict:
+    verbosity = parsed.get("verbosity") if isinstance(parsed, dict) else None
+    if not isinstance(verbosity, dict):
+        verbosity = {}
+    score = _clamp_score(verbosity.get("score"))
+    note = _as_text(verbosity.get("note"))[:200]
+    if _too_scenic(text):
+        score = 7 if score is None else max(score, 7)
+        if "对白" not in note and "引号" not in note:
+            note = (note + " 文中仍有对白或引号。").strip()
+    if score is None:
+        score = 0
+        note = note or "这次没评上啰嗦程度。"
+    by_index = {}
+    raw_rules = parsed.get("rules") if isinstance(parsed, dict) else None
+    if isinstance(raw_rules, list):
+        for item in raw_rules:
+            if not isinstance(item, dict):
+                continue
+            try:
+                index = int(item.get("index") or 0)
+            except (TypeError, ValueError):
+                continue
+            by_index[index] = item
+    scored_rules = []
+    for index, rule in enumerate(rules, 1):
+        item = by_index.get(index, {})
+        rule_score = _clamp_score(item.get("score"))
+        rule_note = _as_text(item.get("note"))[:160] or "这次没评上。"
+        scored_rules.append({
+            "index": index,
+            "rule": rule,
+            "score": rule_score,
+            "note": rule_note,
+        })
+    return {
+        "mark": synopsis_mark(text),
+        "verbosity": {"score": score, "note": note or "未说明"},
+        "rules": scored_rules,
+    }
+
+
+async def _score_synopsis(text: str, dianwen: str) -> str:
+    rules = prompts.split_dianwen_rules(dianwen)
+    messages = prompts.build_synopsis_score_prompt(text, rules)
+    parsed = None
+    last_raw = ""
+    try:
+        for _ in range(2):
+            last_raw = await client.chat(
+                messages, temperature=0.2, max_tokens=4096, extra=_NO_THINKING,
+            )
+            candidate = _extract_json(last_raw)
+            if isinstance(candidate, dict):
+                parsed = candidate
+                if isinstance(candidate.get("rules"), list) or not rules:
+                    break
+    except client.LLMError as e:
+        logger.error("全文概述评分失败：%s", e)
+    if parsed is None:
+        logger.error("全文概述评分无法解析：%s", last_raw[:800])
+        parsed = {}
+    return json.dumps(_normalize_score(parsed, rules, text), ensure_ascii=False)
+
+
+def _take_synopsis_cache(project: Project, cache_key: str) -> bool:
+    """缓存和当前思路、书名、癫文宝经一致时，换成正在看的这篇。"""
+    cached = (project.synopsis_cache or "").strip()
+    if project.synopsis_cache_key != cache_key or len(cached) < 1000:
+        if project.synopsis_cache_key and project.synopsis_cache_key != cache_key:
+            project.synopsis_cache = ""
+            project.synopsis_cache_score = ""
+            project.synopsis_cache_key = ""
+        return False
+    project.full_synopsis = cached
+    project.synopsis_score = project.synopsis_cache_score or ""
+    project.synopsis_cache = ""
+    project.synopsis_cache_score = ""
+    project.synopsis_cache_key = ""
+    return True
+
+
+_synopsis_warming: set[tuple[int, str]] = set()
+
+
+async def _warm_synopsis_cache(project_id: int, idea: str, title: str, cache_key: str) -> None:
+    """再写一篇概述放进备份，不改当前正在看的那篇。"""
+    token = (project_id, cache_key)
+    if token in _synopsis_warming:
+        return
+    _synopsis_warming.add(token)
+    try:
+        with Session(engine) as session:
+            project = session.get(Project, project_id)
+            if not project:
+                return
+            dianwen = prompts.resolve_dianwen(None, get_dianwen(session))
+            if _synopsis_cache_key(idea, project.title, dianwen) != cache_key:
+                return
+            if (project.synopsis_cache_key or "") == cache_key and len((project.synopsis_cache or "").strip()) >= 1000:
+                return
+            try:
+                text = await _write_long_synopsis(idea, title or project.title, dianwen)
+            except client.LLMError as e:
+                logger.error("[synopsis] 预备下一篇失败：%s", e)
+                return
+            if len(text) < 1000:
+                logger.error("[synopsis] 预备的概述过短：%s 字", len(text))
+                return
+            score = await _score_synopsis(text, dianwen)
+            project = session.get(Project, project_id)
+            if not project:
+                return
+            dianwen = prompts.resolve_dianwen(None, get_dianwen(session))
+            if _synopsis_cache_key(idea, project.title, dianwen) != cache_key:
+                return
+            if (project.synopsis_cache_key or "") == cache_key and len((project.synopsis_cache or "").strip()) >= 1000:
+                return
+            project.synopsis_cache = text
+            project.synopsis_cache_score = score
+            project.synopsis_cache_key = cache_key
+            session.add(project)
+            session.commit()
+            logger.info("[synopsis] 已备好下一篇 project=%s len=%s", project_id, len(text))
+    finally:
+        _synopsis_warming.discard(token)
+
+
 @router.post("/projects/{project_id}/synopsis/generate")
 async def generate_full_synopsis(project_id: int, body: SynopsisGenerateRequest,
+                                 background: BackgroundTasks,
                                  session: Session = Depends(get_session)):
-    """用开头思路和癫文宝经写 8000 到 10000 字的全文概述。"""
+    """用开头思路和癫文宝经写 8000 到 10000 字的全文概述，并打分。有备份就直接换上。"""
     idea = (body.idea or "").strip()
     if not idea:
         raise HTTPException(400, "请先写下开头或思路")
@@ -319,20 +469,29 @@ async def generate_full_synopsis(project_id: int, body: SynopsisGenerateRequest,
     if not project:
         raise HTTPException(404, "项目不存在")
     dianwen = prompts.resolve_dianwen(None, get_dianwen(session))
-    try:
-        text = await _write_long_synopsis(idea, project.title, dianwen)
-    except client.LLMError as e:
-        raise HTTPException(502, str(e)) from e
-    if len(text) < 1000:
-        logger.error("全文概述过短：%s 字", len(text))
-        raise HTTPException(502, "模型没写出可用的全文概述，请再试一次")
+    cache_key = _synopsis_cache_key(idea, project.title, dianwen)
+    from_backup = _take_synopsis_cache(project, cache_key)
+    if not from_backup:
+        try:
+            text = await _write_long_synopsis(idea, project.title, dianwen)
+        except client.LLMError as e:
+            raise HTTPException(502, str(e)) from e
+        if len(text) < 1000:
+            logger.error("全文概述过短：%s 字", len(text))
+            raise HTTPException(502, "模型没写出可用的全文概述，请再试一次")
+        project.full_synopsis = text
+        project.synopsis_score = await _score_synopsis(text, dianwen)
     project.opening_idea = idea
-    project.full_synopsis = text
     project.updated_at = datetime.utcnow()
     session.add(project)
     session.commit()
     session.refresh(project)
-    return {"project": project, "length": len(text)}
+    background.add_task(_warm_synopsis_cache, project.id, idea, project.title, cache_key)
+    return {
+        "project": project,
+        "length": len(project.full_synopsis or ""),
+        "from_backup": from_backup,
+    }
 
 
 @router.post("/projects/{project_id}/bible/from-synopsis")
