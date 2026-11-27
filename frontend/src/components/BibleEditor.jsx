@@ -8,15 +8,18 @@ export default function BibleEditor({ project, onSaved, notify }) {
   const [idea, setIdea] = useState('')
   const [coreCount, setCoreCount] = useState('')
   const [filling, setFilling] = useState(false)
+  const [writingSynopsis, setWritingSynopsis] = useState(false)
 
   useEffect(() => { setForm(project) }, [project.id])
 
   const ideaRef = useRef(idea)
   const countRef = useRef(coreCount)
+  const synopsisRef = useRef('')
   const projectIdRef = useRef(null)
   const skipSave = useRef(true)
   ideaRef.current = idea
   countRef.current = coreCount
+  synopsisRef.current = form.full_synopsis || ''
 
   function countPayload(raw) {
     const n = Number(raw)
@@ -24,17 +27,18 @@ export default function BibleEditor({ project, onSaved, notify }) {
     return Math.floor(n)
   }
 
-  function saveDraft(id, draftIdea, draftCount) {
+  function saveDraft(id, draftIdea, draftCount, draftSynopsis) {
     return api.updateProject(id, {
       opening_idea: draftIdea,
       core_character_count: countPayload(draftCount),
+      full_synopsis: draftSynopsis,
     }).then(() => onSaved?.()).catch((e) => notify(e.message, true))
   }
 
   useEffect(() => {
     const prevId = projectIdRef.current
     if (prevId != null && prevId !== project.id) {
-      saveDraft(prevId, ideaRef.current, countRef.current)
+      saveDraft(prevId, ideaRef.current, countRef.current, synopsisRef.current)
     }
     projectIdRef.current = project.id
     skipSave.current = true
@@ -52,10 +56,10 @@ export default function BibleEditor({ project, onSaved, notify }) {
       return
     }
     const timer = setTimeout(() => {
-      saveDraft(project.id, idea, coreCount)
+      saveDraft(project.id, idea, coreCount, form.full_synopsis || '')
     }, 400)
     return () => clearTimeout(timer)
-  }, [idea, coreCount])
+  }, [idea, coreCount, form.full_synopsis])
 
   useEffect(() => {
     api.listCharacters(project.id).then(setChars).catch((e) => notify(e.message, true))
@@ -75,7 +79,7 @@ export default function BibleEditor({ project, onSaved, notify }) {
       notify('先写下开头思路', true)
       return
     }
-    const hasContent = ['premise', 'mood', 'style', 'world_rules', 'full_synopsis'].some((k) => (form[k] || '').trim())
+    const hasContent = ['premise', 'mood', 'style', 'world_rules'].some((k) => (form[k] || '').trim())
       || chars.length > 0
     if (hasContent && !replace && !confirm(
       '已有故事圣经或角色档案。自动填充会覆盖这些内容，并删除现有角色的形象设定。继续？'
@@ -92,6 +96,56 @@ export default function BibleEditor({ project, onSaved, notify }) {
       })
       applyFill(data)
       notify(`已填好故事圣经和 ${data.characters.length} 个角色`)
+    } catch (e) {
+      notify(e.message, true)
+    } finally {
+      setFilling(false)
+    }
+  }
+
+  async function generateSynopsis() {
+    const text = idea.trim()
+    if (!text) {
+      notify('先写下开头或思路', true)
+      return
+    }
+    if ((form.full_synopsis || '').trim() && !confirm('已有全文概述。重新生成会覆盖框里的文字。继续？')) return
+    setWritingSynopsis(true)
+    try {
+      const data = await api.generateFullSynopsis(project.id, { idea: text })
+      setForm((f) => ({ ...f, ...data.project }))
+      onSaved?.()
+      const length = data.length || (data.project.full_synopsis || '').length
+      notify(length >= 8000 ? `全文概述已生成，共 ${length} 字` : `全文概述已生成，这次只有 ${length} 字，可以再生成一次`)
+    } catch (e) {
+      notify(e.message, true)
+    } finally {
+      setWritingSynopsis(false)
+    }
+  }
+
+  async function fillFromSynopsis() {
+    const synopsis = (form.full_synopsis || '').trim()
+    if (!synopsis) {
+      notify('先写好全文概述', true)
+      return
+    }
+    const hasContent = ['premise', 'mood', 'style', 'world_rules'].some((k) => (form[k] || '').trim())
+      || chars.length > 0
+    if (hasContent && !confirm(
+      '会按这篇概述重写故事背景、氛围、文风、世界观和角色档案。全文概述保持你改过的文字。已有角色的形象设定会被删除。继续？'
+    )) return
+    const typed = Number(coreCount)
+    const coreCharacterCount = Number.isFinite(typed) && typed > 0 ? Math.floor(typed) : 17
+    setFilling(true)
+    try {
+      const data = await api.bibleFromSynopsis(project.id, {
+        synopsis,
+        replace: hasContent,
+        core_character_count: coreCharacterCount,
+      })
+      applyFill(data)
+      notify(`已按全文概述填好故事圣经和 ${data.characters.length} 个角色`)
     } catch (e) {
       notify(e.message, true)
     } finally {
@@ -160,13 +214,31 @@ export default function BibleEditor({ project, onSaved, notify }) {
             <input type="number" min="1" value={coreCount} placeholder="17"
               onChange={(e) => setCoreCount(e.target.value)} />
           </div>
-          <button onClick={() => autofill(false)} disabled={filling || !idea.trim()}>
+          <button onClick={() => autofill(false)} disabled={filling || writingSynopsis || !idea.trim()}>
             {filling ? '填充中…' : '自动填充圣经与角色'}
           </button>
         </div>
         <p className="hint">
-          不填核心角色人数时按 17 人生成。填充时会参考癫文宝经，并写出全文概述。已有圣经或角色时，会先确认再覆盖。
+          不填核心角色人数时按 17 人生成。这一步按开头思路填写故事圣经和角色，不改全文概述。已有圣经或角色时，会先确认再覆盖。
         </p>
+
+        <label>全文概述</label>
+        <textarea rows={16} value={form.full_synopsis || ''}
+          placeholder="给作者看的全书情节：开端、转折、读者会猜错的方向、实际结局。可以自己改。"
+          onChange={(e) => set('full_synopsis', e.target.value)} />
+        <p className="hint">
+          当前 {(form.full_synopsis || '').trim().length} 字。生成目标是 8000 到 10000 字，依据开头思路和癫文宝经，写成一部预计百万字小说的情节概述。框里的文字可以随意改，改完会自动保存。
+        </p>
+        <div className="row">
+          <button onClick={generateSynopsis} disabled={writingSynopsis || filling || !idea.trim()}>
+            {writingSynopsis ? '概述生成中…' : '生成全文概述'}
+          </button>
+          <button className="primary" onClick={fillFromSynopsis}
+            disabled={filling || writingSynopsis || !(form.full_synopsis || '').trim()}>
+            {filling ? '填充中…' : '用这篇概述生成故事圣经'}
+          </button>
+        </div>
+
         <label>作品标题</label>
         <input value={form.title || ''} onChange={(e) => set('title', e.target.value)} />
 
@@ -189,12 +261,6 @@ export default function BibleEditor({ project, onSaved, notify }) {
         <textarea rows={3} value={form.world_rules || ''}
           placeholder="力量体系、社会结构、不可违背的设定红线……"
           onChange={(e) => set('world_rules', e.target.value)} />
-
-        <label>全文概述</label>
-        <textarea rows={8} value={form.full_synopsis || ''}
-          placeholder="全书情节概述：开端、转折、读者会猜错的结局和实际结局。生成大纲时会用到。"
-          onChange={(e) => set('full_synopsis', e.target.value)} />
-        <p className="hint">这篇概述只在生成大纲和展开卷章节时提供给模型，不会进入正文写作。</p>
 
         <label>目标总字数（选填，0=不限）</label>
         <input type="number" value={form.target_words || 0}

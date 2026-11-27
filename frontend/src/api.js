@@ -44,6 +44,10 @@ export const api = {
     req('/settings', { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(body) }),
   autofillBible: (id, body) =>
     req(`/projects/${id}/bible/autofill`, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) }),
+  generateFullSynopsis: (id, body) =>
+    req(`/projects/${id}/synopsis/generate`, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) }),
+  bibleFromSynopsis: (id, body) =>
+    req(`/projects/${id}/bible/from-synopsis`, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) }),
   listPlotDecisions: (id) => req(`/projects/${id}/plot-decisions`),
   generatePlotOptions: (id, body) =>
     req(`/projects/${id}/plot-decisions/options`, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) }),

@@ -15,6 +15,18 @@ class ProjectCreate(BaseModel):
     target_words: int = 0
 
 
+class BibleFromSynopsisRequest(BaseModel):
+    """用已经改好的全文概述生成故事圣经和角色档案。"""
+    synopsis: str
+    replace: bool = False
+    core_character_count: Optional[int] = None
+
+
+class SynopsisGenerateRequest(BaseModel):
+    """用开头思路和癫文宝经生成百万字篇幅的全文概述。"""
+    idea: str
+
+
 class BibleAutofillRequest(BaseModel):
     """用开头思路自动填充故事圣经和角色档案。"""
     idea: str

@@ -12,8 +12,8 @@ from app.models import (
     PlotDecision, PlotThread, Project,
 )
 from app.schemas import (
-    BibleAutofillRequest, CharacterCreate, CharacterUpdate, ProjectCreate,
-    ProjectUpdate, SettingsUpdate,
+    BibleAutofillRequest, BibleFromSynopsisRequest, CharacterCreate, CharacterUpdate,
+    ProjectCreate, ProjectUpdate, SettingsUpdate, SynopsisGenerateRequest,
 )
 from app.services.app_settings import get_dianwen, save_dianwen
 from app.services.generation import _extract_json
@@ -66,8 +66,8 @@ def update_project(project_id: int, body: ProjectUpdate,
     data = body.model_dump(exclude_unset=True)
     for k, v in data.items():
         setattr(project, k, v)
-    # 开头思路和人数是边写边存的草稿，不把作品顶到列表最前。
-    if set(data) - {"opening_idea", "core_character_count"}:
+    # 开头思路、人数和全文概述是边写边存的草稿，不把作品顶到列表最前。
+    if set(data) - {"opening_idea", "core_character_count", "full_synopsis"}:
         project.updated_at = datetime.utcnow()
     session.add(project)
     session.commit()
@@ -100,7 +100,7 @@ async def autofill_bible(project_id: int, body: BibleAutofillRequest,
     ).all()
     has_bible = any(
         (getattr(project, key) or "").strip()
-        for key in ("premise", "mood", "style", "world_rules", "full_synopsis")
+        for key in ("premise", "mood", "style", "world_rules")
     )
     if (has_bible or existing) and not body.replace:
         raise HTTPException(
@@ -125,11 +125,8 @@ async def autofill_bible(project_id: int, body: BibleAutofillRequest,
     mood = _as_text(parsed.get("mood"))
     style = _as_text(parsed.get("style"))
     world_rules = _as_text(parsed.get("world_rules"))
-    full_synopsis = _as_text(parsed.get("full_synopsis"))
     if not premise:
         raise HTTPException(502, "模型未写好故事背景，请换个开头思路再试")
-    if not full_synopsis:
-        raise HTTPException(502, "模型未写好全文概述，请再试一次")
 
     new_characters: list[Character] = []
     for item in parsed.get("characters") or []:
@@ -151,7 +148,6 @@ async def autofill_bible(project_id: int, body: BibleAutofillRequest,
     project.mood = mood
     project.style = style
     project.world_rules = world_rules
-    project.full_synopsis = full_synopsis
     new_title = _as_text(parsed.get("title"))
     if new_title and project.title.strip() in ("", "未命名作品"):
         project.title = new_title
@@ -168,6 +164,155 @@ async def autofill_bible(project_id: int, body: BibleAutofillRequest,
             session.delete(ch)
         session.commit()
 
+    session.add(project)
+    for ch in new_characters:
+        session.add(ch)
+    session.commit()
+    session.refresh(project)
+    for ch in new_characters:
+        session.refresh(ch)
+    return {"project": project, "characters": new_characters}
+
+
+def _clean_prose(text: str) -> str:
+    t = (text or "").strip()
+    if t.startswith("```"):
+        lines = t.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        t = "\n".join(lines).strip()
+    return t
+
+
+def _characters_from_json(project_id: int, items) -> list[Character]:
+    found: list[Character] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        name = _as_text(item.get("name"))
+        if not name:
+            continue
+        found.append(Character(
+            project_id=project_id,
+            name=name,
+            role=_as_text(item.get("role")),
+            description=_as_text(item.get("description")),
+        ))
+    return found
+
+
+def _delete_characters(session: Session, existing: list[Character]) -> None:
+    char_ids = [c.id for c in existing]
+    if not char_ids:
+        return
+    for model in (CharacterRefImage, CharacterDesign):
+        for row in session.exec(select(model).where(model.character_id.in_(char_ids))).all():
+            session.delete(row)
+    for ch in existing:
+        session.delete(ch)
+    session.commit()
+
+
+_NO_THINKING = {"thinking": {"type": "disabled"}}
+
+
+async def _write_long_synopsis(idea: str, title: str, dianwen: str) -> str:
+    messages = prompts.build_full_synopsis_prompt(idea, title, dianwen)
+    raw = await client.chat(
+        messages, temperature=0.7, max_tokens=24576, extra=_NO_THINKING,
+    )
+    text = _clean_prose(raw)
+    for _ in range(3):
+        if len(text) >= prompts.SYNOPSIS_MIN_CHARS:
+            break
+        room = prompts.SYNOPSIS_MAX_CHARS - len(text)
+        if room < 400:
+            break
+        need = prompts.SYNOPSIS_MIN_CHARS - len(text)
+        follow = prompts.build_synopsis_continue_prompt(text, need, room)
+        more = _clean_prose(await client.chat(
+            follow, temperature=0.5, max_tokens=min(16384, max(room * 2, 2048)),
+            extra=_NO_THINKING,
+        ))
+        if len(more) < 200:
+            break
+        text = text.rstrip() + "\n" + more
+    return text.strip()
+
+
+@router.post("/projects/{project_id}/synopsis/generate")
+async def generate_full_synopsis(project_id: int, body: SynopsisGenerateRequest,
+                                 session: Session = Depends(get_session)):
+    """用开头思路和癫文宝经写 8000 到 10000 字的全文概述。"""
+    idea = (body.idea or "").strip()
+    if not idea:
+        raise HTTPException(400, "请先写下开头或思路")
+    project = session.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    dianwen = prompts.resolve_dianwen(None, get_dianwen(session))
+    try:
+        text = await _write_long_synopsis(idea, project.title, dianwen)
+    except client.LLMError as e:
+        raise HTTPException(502, str(e)) from e
+    if len(text) < 1000:
+        logger.error("全文概述过短：%s 字", len(text))
+        raise HTTPException(502, "模型没写出可用的全文概述，请再试一次")
+    project.opening_idea = idea
+    project.full_synopsis = text
+    project.updated_at = datetime.utcnow()
+    session.add(project)
+    session.commit()
+    session.refresh(project)
+    return {"project": project, "length": len(text)}
+
+
+@router.post("/projects/{project_id}/bible/from-synopsis")
+async def bible_from_synopsis(project_id: int, body: BibleFromSynopsisRequest,
+                              session: Session = Depends(get_session)):
+    """用作者改过的全文概述填写故事圣经和角色。不改写这篇概述。"""
+    synopsis = (body.synopsis or "").strip()
+    if not synopsis:
+        raise HTTPException(400, "请先写好全文概述")
+    project = session.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    existing = session.exec(select(Character).where(Character.project_id == project_id)).all()
+    has_bible = any((getattr(project, key) or "").strip() for key in ("premise", "mood", "style", "world_rules"))
+    if (has_bible or existing) and not body.replace:
+        raise HTTPException(
+            409, "已有故事圣经或角色档案。确认后将按这篇概述覆盖，并删除现有角色的形象设定。全文概述保持不变。"
+        )
+    dianwen = prompts.resolve_dianwen(None, get_dianwen(session))
+    count = body.core_character_count if body.core_character_count and body.core_character_count > 0 else 17
+    messages = prompts.build_bible_from_synopsis_prompt(synopsis, project.title, dianwen, count)
+    budget = client.output_token_budget(sum(len(m.get("content") or "") for m in messages))
+    try:
+        raw = await client.chat(messages, temperature=0.4, max_tokens=min(budget, 32768))
+    except client.LLMError as e:
+        raise HTTPException(502, str(e)) from e
+    parsed = _extract_json(raw)
+    if not isinstance(parsed, dict):
+        logger.error("按概述填充故事圣经无法解析：%s", raw[:1000])
+        raise HTTPException(502, "模型未返回可用的故事圣经，请再试一次")
+    premise = _as_text(parsed.get("premise"))
+    if not premise:
+        raise HTTPException(502, "模型未写好故事背景，请再试一次")
+    new_characters = _characters_from_json(project_id, parsed.get("characters"))
+    if not new_characters:
+        raise HTTPException(502, "模型未返回有效角色")
+    project.full_synopsis = synopsis
+    project.premise = premise
+    project.mood = _as_text(parsed.get("mood"))
+    project.style = _as_text(parsed.get("style"))
+    project.world_rules = _as_text(parsed.get("world_rules"))
+    new_title = _as_text(parsed.get("title"))
+    if new_title and project.title.strip() in ("", "未命名作品"):
+        project.title = new_title
+    project.updated_at = datetime.utcnow()
+    _delete_characters(session, existing)
     session.add(project)
     for ch in new_characters:
         session.add(ch)

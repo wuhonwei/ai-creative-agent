@@ -53,11 +53,13 @@ def _payload(messages: list[dict], stream: bool, temperature: float | None,
 
 
 async def chat(messages: list[dict], temperature: float | None = None,
-               max_tokens: int | None = None) -> str:
-    """非流式：返回完整 assistant 文本。"""
+               max_tokens: int | None = None, extra: dict | None = None) -> str:
+    """非流式：返回完整 assistant 文本。extra 用于关闭思考等模型参数。"""
     _check_configured()
     url = f"{settings.deepseek_base_url}/chat/completions"
     payload = _payload(messages, False, temperature, max_tokens)
+    if extra:
+        payload.update(extra)
 
     # 详细日志：打印调用参数
     logger.info(

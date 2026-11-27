@@ -220,25 +220,22 @@ def build_bible_fill_prompt(idea: str, title: str, dianwen: str,
 {idea.strip()}
 
 【癫文宝经】
-填充故事圣经、全文概述和角色档案时参考下面这些通用情节原则。
+填充故事圣经和角色档案时参考下面这些通用情节原则。
 设定要能支撑这些手法：读者没想过的下一步、人物之间的信息差、不到尾声就猜不中结局、爽点与反差。
-不要把原则原文抄进字段。结局只写在 full_synopsis 里，不要写进 premise。
+不要把原则原文抄进字段，也不要在这些字段里写明结局。
 {canon}
 
-请把开头思路展开成可直接开写的故事圣经、全文概述和角色档案。要求：
+请把开头思路展开成可直接开写的故事圣经和角色档案。要求：
 1. premise 写清时代、世界、核心冲突，以及故事从哪个人、哪件事开始。留下后文才能揭开的缺口，不要写明结局。
 2. mood 用简短的词写出整体氛围。
 3. style 写人称、节奏和语言风格。
 4. world_rules 写这个世界不能打破的规则。
-5. full_synopsis 写 400 到 800 字的全书情节概述，供之后生成大纲使用。
-   用概括句写开端、几次关键转折、读者按常理会猜到的结局、实际结局，以及主要的信息差和反差。
-   不写对白，不写场景细节。结局要写清楚，因为这是给作者看的。
-6. characters 正好写 {count} 个核心角色，包含主角和对手。每人有姓名、定位、性格与秘密。
+5. characters 正好写 {count} 个核心角色，包含主角和对手。每人有姓名、定位、性格与秘密。
    人数必须是 {count}，不要少写，也不要多写。description 每人两三句，避免输出被截断。
    至少有一对人物：一方知道的关键信息，另一方不知道。
    角色之间要有能形成反差的身份或关系。
    不要写角色的当前状态，也不要写开场这一刻正在做什么。状态要等正文确认后才更新。
-7. title：暂定标题如果是「未命名作品」或过空，另起一个贴切书名；否则沿用暂定标题。
+6. title：暂定标题如果是「未命名作品」或过空，另起一个贴切书名；否则沿用暂定标题。
 
 仅输出 JSON，不要任何额外文字：
 {{
@@ -247,13 +244,101 @@ def build_bible_fill_prompt(idea: str, title: str, dianwen: str,
   "mood": "氛围",
   "style": "文风",
   "world_rules": "规则",
-  "full_synopsis": "400到800字的全书情节概述",
   "characters": [
     {{"name": "姓名", "role": "定位", "description": "性格、欲望与秘密"}}
   ]
 }}"""
     return [
         {"role": "system", "content": SYSTEM_WRITER},
+        {"role": "user", "content": user},
+    ]
+
+
+SYNOPSIS_MIN_CHARS = 8000
+SYNOPSIS_MAX_CHARS = 10000
+
+
+def build_full_synopsis_prompt(idea: str, title: str, dianwen: str) -> list[dict]:
+    """按开头思路和癫文宝经，写一篇供百万字长篇使用的全文概述。"""
+    canon = (dianwen or "").strip() or DEFAULT_DIANWEN
+    shown_title = (title or "").strip() or "未命名作品"
+    user = f"""作品暂定标题：{shown_title}
+
+【开头或思路】
+{idea.strip()}
+
+【癫文宝经】
+写全文概述时参考下面这些通用情节原则，把它们落到具体的人物、势力和转折上。
+不要把原则原文抄进概述。
+{canon}
+
+请写一篇给作者看的全文概述，用来支撑一部预计一百万字的长篇小说。
+篇幅 {SYNOPSIS_MIN_CHARS} 到 {SYNOPSIS_MAX_CHARS} 字。写到这个范围就停，不要超过 {SYNOPSIS_MAX_CHARS} 字。
+用概括句按时间写完全书：开端、几次把局面推高的转折、中段读者按常理会猜到的方向、那个方向为什么是错的、各方势力如何登场和内部分裂、主要人物各自的人生线在何处相交、终局如何收回前面的信息差。
+结局要写清楚。不写对白，不写场景细节，不要分成章节目录。
+只输出概述正文，不要标题，不要前言。"""
+    return [
+        {"role": "system", "content": SYSTEM_OUTLINE},
+        {"role": "user", "content": user},
+    ]
+
+
+def build_synopsis_continue_prompt(written: str, still_needed: int, room: int) -> list[dict]:
+    """把偏短的全文概述接着写到目标篇幅。"""
+    tail = written[-1200:]
+    user = f"""下面是一篇尚未写完的全文概述，结尾是：
+
+{tail}
+
+请从这里接着写，只输出续写，不要重复已有内容，不要另起提纲。
+这次大约再写 {min(still_needed, room)} 字，使全文落在 {SYNOPSIS_MIN_CHARS} 到 {SYNOPSIS_MAX_CHARS} 字。
+不要超过剩余的 {room} 字。继续用概括句写后面的转折和终局，不写对白，不写场景细节。"""
+    return [
+        {"role": "system", "content": SYSTEM_OUTLINE},
+        {"role": "user", "content": user},
+    ]
+
+
+def build_bible_from_synopsis_prompt(synopsis: str, title: str, dianwen: str,
+                                     core_character_count: int = 17) -> list[dict]:
+    """根据作者改过的全文概述提取故事圣经和角色档案。概述本身不再改写。"""
+    canon = (dianwen or "").strip() or DEFAULT_DIANWEN
+    count = core_character_count if core_character_count and core_character_count > 0 else 17
+    shown_title = (title or "").strip() or "未命名作品"
+    user = f"""作品暂定标题：{shown_title}
+
+【全文概述（作者可能改过，这是唯一的情节依据，不要另写一条主线）】
+{synopsis.strip()}
+
+【癫文宝经】
+提取设定时对照这些原则，让角色秘密和信息差跟概述一致。不要把原则原文抄进字段。
+{canon}
+
+请只根据这篇概述填写故事圣经和角色档案。要求：
+1. premise 写清时代、世界、核心冲突，以及故事从哪个人、哪件事开始。不要写明结局。
+2. mood 用简短的词写出整体氛围。
+3. style 写人称、节奏和语言风格。概述没写文风时，按长篇网文的叙述来定，不要另造题材。
+4. world_rules 只写概述里已经成立的规则。
+5. characters 正好写 {count} 个核心角色。先用概述里已有的人名；人数不够时，只按概述里的阵营和空缺补足，不要发明另一条主线。
+   每人有姓名、定位、性格与秘密。description 每人两三句。
+   至少有一对人物：一方知道的关键信息，另一方不知道。
+   不要写角色的当前状态，也不要写开场这一刻正在做什么。
+6. title：暂定标题如果是「未命名作品」或过空，按概述另起书名；否则沿用暂定标题。
+7. 不要输出全文概述，不要改写概述里的结局。
+
+仅输出 JSON，不要任何额外文字：
+{{
+  "title": "书名",
+  "premise": "背景与核心设定",
+  "mood": "氛围",
+  "style": "文风",
+  "world_rules": "规则",
+  "characters": [
+    {{"name": "姓名", "role": "定位", "description": "性格、欲望与秘密"}}
+  ]
+}}"""
+    return [
+        {"role": "system", "content": SYSTEM_OUTLINE},
         {"role": "user", "content": user},
     ]
 
